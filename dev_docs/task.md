@@ -1,0 +1,83 @@
+# Strategy-Based Context & Execution Pipeline Task List
+
+- `[x]` **Phase 1: Refactor Context & Prompt Strategies (`context.py`)**
+  - `[x]` Define slotted `BasePromptInputs` and `DefaultPromptInputs`
+  - `[x]` Define `ModelRequestContext` dataclass
+  - `[x]` Define `ContextSourceRepository` interface and implementation
+  - `[x]` Define `PromptStrategy` abstract base class
+  - `[x]` Define `DefaultAgentExecutionStrategy`
+  - `[x]` Remove procedural prompt-building functions (`build_system_prompt`, `get_directory_context_string_async`)
+- `[x]` **Phase 2: Implement Execution Guard System (`guards.py`)**
+  - `[x]` Define `ToolExecutionGuard` interface
+  - `[x]` Implement `PathValidationGuard` for strict sandboxing
+  - `[x]` Implement `UserConfirmationGuard` for interactive gates
+  - `[x]` Implement `TelemetryLoggerGuard` for auditing
+  - `[x]` Implement `ToolExecutionChain` middleware orchestrator
+- `[x]` **Phase 3: Update Executor Integration (`executor.py`)**
+  - `[x]` Refactor `LocalAgentExecutor` constructor to accept strategy, inputs, and repository
+  - `[x]` Update `call_model_async` to fetch system instructions, tools, and history via `strategy.compile_request_context`
+  - `[x]` Refactor tool execution inside `execute_turn` to resolve via strategy and run through the `ToolExecutionChain`
+  - `[x]` Remove all procedural history compression and path assertions from executor
+- `[x]` **Phase 4: Adapt Bootstrapper & Test Suites**
+  - `[x]` Update CLI bootstrap in `main.py` to instantiate and inject the pipeline
+  - `[x]` Update `test_prompt_system.py` to target new strategy components directly
+  - `[x]` Run both test suites to ensure 100% green compliance
+- `[x]` **Phase 5: Built-In Subagent Externalization & Code Purity**
+  - `[x]` Create built-in subagents yaml profiles directory: `gemini_replica/prompts/agents/`
+  - `[x]` Write profile `codebase_investigator.agent.yaml` with reverse-engineering instructions and YAML schema
+  - `[x]` Write profile `cli_help.agent.yaml` with CLI documentation assistance guidelines
+  - `[x]` Write profile `generalist.agent.yaml` with broad all-tool usage directives
+  - `[x]` Define a strict Pydantic model `SubagentDefinition` in `gemini_replica/agents.py` to validate fields (name, description, systemPrompt, maxTurns, maxTimeSeconds, etc.)
+  - `[x]` Refactor `AgentRegistry.discover_agents` in `gemini_replica/agents.py` to scan directories, parse `.yaml` configurations, and populate default profiles dynamically
+  - `[x]` Remove legacy hardcoded dictionaries (`coder`, `researcher`, etc.) and fallback code from `gemini_replica/agents.py`
+  - `[x]` Ensure test verification scripts and standard suites run seamlessly with YAML-externalized subagent setups
+- `[x]` **Phase 6: Boundary Validation, Immutability, Sessions, and Async I/O**
+  - `[x]` **Component 2: Boundary Types & Telemetry Overhaul**
+    - `[x]` Convert internal dataclasses in `types.py` (`ToolCall`, `ThoughtChunk`, `CompletionChunk`, `ToolExecutionOutcome`, `TurnOutcome`) to use `@dataclass(slots=True, frozen=True)`
+    - `[x]` Define `EventType` enum as a strict string-based `Enum` type in `types.py`
+    - `[x]` Define `ActivityType` enum as a strict string-based `Enum` type in `types.py`
+    - `[x]` Define strict telemetry payload dataclasses with slots and frozen constraints in `types.py`
+    - `[x]` Implement `EventEnvelope[T]` container in `types.py` wrapping payloads with metadata (timestamp, correlation_id, types)
+    - `[x]` Update `MessageBus` methods in `bus.py` (`publish`, `subscribe`, `request`) to accept and dispatch `EventEnvelope[T]` instances
+    - `[x]` Fix the silent exception swallowing inside `MessageBus.publish` (`bus.py`):
+      - `[x]` Inspect the output of `asyncio.gather(*tasks, return_exceptions=True)`
+      - `[x]` Explicitly log and output caught subscriber exception tracebacks to stderr
+  - `[x]` **Component 3: Performance, Caching & Stateful Sessions Refactoring**
+    - `[x]` Implement the Pydantic serialization models in `sessions.py`:
+      - `[x]` `ChatMessage` (representing a single conversation message role and structured parts)
+      - `[x]` `SessionPayload` (validating full chat histories and session parameters)
+      - `[x]` `SessionMetadataPayload` (validating companion metadata sidecars)
+    - `[x]` Implement the stateful **`AgentSession`** class in `sessions.py` containing:
+      - `[x]` Slot-based properties: `session_id`, `storage_dir`, `_history`, `_metadata`
+      - `[x]` Safe non-blocking sync to disk via `asyncio.to_thread` for full history `.json` saves
+      - `[x]` Simultaneous companion sidecar metadata write (`<session_id>.meta.json`) containing metadata and `turn_count`
+      - `[x]` Mutation methods `append_message(role, parts)` and `set_history(history)` that automatically trigger the dual-file disk save
+    - `[x]` Refactor `SessionManager` in `sessions.py` to be a repository factory returning `AgentSession` instances on load/creation
+    - `[x]` Update `list_sessions()` in `SessionManager` to read *only* `.meta.json` files and sort them, avoiding full-history JSON overhead
+    - `[x]` Implement static file content caching inside `PromptTemplateLoader` (`prompts/loader.py`) to avoid loading prompts on every turn compile
+    - `[x]` Implement an in-memory cache for custom discovered workspace capabilities inside `SkillManager` (`skills.py`)
+    - `[x]` Implement caching for pre-compiled JSON schemas on `BaseTool.__init__` in `tools.py`
+    - `[x]` Refactor `.gitignore` loading in `tools.py` to prevent quadratic disk hits ($O(N^2)$):
+      - `[x]` Compile patterns exactly once at the entry point of each tool run (`GrepSearchTool.run`, `ListDirectoryTool.run`, etc.)
+      - `[x]` Pass ignore matchers down to sub-methods as functional arguments
+      - `[x]` Erase redundant `os.stat` or file reads during directory traversals
+    - `[x]` Fix `DeadlineTimer` in `timer.py` by deferring loop-bound task creation from `__init__` to an explicit `start()` method
+  - `[x]` **Component 4: Orchestrator & Context Integration**
+    - `[x]` Refactor `PromptStrategy` and `DefaultAgentExecutionStrategy` in `context.py` to accept `AgentSession` instead of a raw Python list
+    - `[x]` Implement `ChatCompressionService` inside `context.py` and compose it into `DefaultAgentExecutionStrategy`
+    - `[x]` Build the two-step compression process (`generation` and `self-critique` validation) inside `ChatCompressionService` mutating the stateful session reference directly
+    - `[x]` Fix tool output truncation in `DefaultAgentExecutionStrategy` (`context.py`):
+      - `[x]` Truncate excessively long tool output strings to the first 1000 characters and append `[Tool output truncated...]` suffix
+      - `[x]` Save complete untruncated tool output logs to dedicated `.log` files inside the temporary or scratch folder
+      - `[x]` Include a direct reference link to the saved log file within the compiled system history
+    - `[x]` Refactor `LocalAgentExecutor` in `executor.py` to accept `AgentSession` and completely remove raw `self.chat_history` lists
+    - `[x]` Update `execute_turn` inside `LocalAgentExecutor` to delegate message turn appending and auto-saving directly to `self.session.append_message`
+    - `[x]` Call `deadline_timer.start()` inside the async `run()` loop of `LocalAgentExecutor`
+    - `[x]` Fix shared subagent tool state corruption in `registry.py` by returning a shallow copy `copy.copy(tool)` on every `get_tool` retrieval
+    - `[x]` Wrap all synchronous file I/O operations (reads, writes, listings, stat checks) in `asyncio.to_thread` for flawless event-loop hygiene
+- `[x]` **Phase 7: Verification and Quality Assurance**
+  - `[x]` Run prompt loading and YAML subagent discovery tests: `uv run python test_prompt_system.py`
+  - `[x]` Run integrated turn loop streaming and session persistence tests: `uv run python test_session_and_client.py`
+  - `[x]` Verify that no dynamic telemetry subscription errors are swallowed or hidden on the message bus
+  - `[x]` Verify that parallel subagent tool executions do not corrupt or scramble message bus state
+  - `[x]` Check directory traversals to verify `.gitignore` lookup is extremely fast and free of quadratic disk hitting

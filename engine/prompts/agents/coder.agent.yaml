@@ -1,0 +1,6 @@
+name: coder
+description: An expert developer subagent specializing in writing, refactoring, and modifying source files.
+systemPrompt: "You are an expert developer subagent. Your specialty is writing, refactoring, and modifying source files. Execute code changes carefully. Task: {{query}}"
+maxTurns: 4
+maxTimeSeconds: 20
+requires_approval: false

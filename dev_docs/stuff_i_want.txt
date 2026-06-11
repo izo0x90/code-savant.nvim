@@ -1,0 +1,32 @@
+----------------------------------------------------------------------------------------------------
+Features
+----------------------------------------------------------------------------------------------------
+- changes happen in git worktree comments before accepting
+- changes happen in git worktree full edit history
+- connect changes to files, but preferably symbols ... quick way to jumpto, open an edit with short cut
+
+- fuzzy find in messages, filter on tags
+- Tagged sessions and fast session swapping
+
+- CONVO RELATED
+  - convo. tag code block, code simbols, files with comments, pull into prompt from tags
+  - conco. quick way to influence answer stype (short, concise, nonn ornate etc. customizible in some way)
+  - convo. tag messages
+  - convo. pull into new session based on tags, same session and different sessions
+  - convo. extract technical summary out of tagged msgs
+
+- On the fly strategy change, as way to drive modes, no simple "ifs" like plan mode
+  - arch registry native flows as mode
+  - Freeflow planning mode
+  - Classic gemini cli mode
+
+
+----------------------------------------------------------------------------------------------------
+General workflow/ Mitigation techniques
+----------------------------------------------------------------------------------------------------
+- Negative constraints do not work well, in cases where micro managing LOC is not desirable/ viable 
+  - have model comment that it made such a decision for easier tracking
+  ```
+  Ex: Error handling fallback, hueristics very strong for silencing in all cases. Have model call out with TODO: commnet
+  ```
+  - Static analysis rules that catch these kind of cases with AST
