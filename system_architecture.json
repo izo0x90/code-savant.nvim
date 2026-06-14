@@ -1,0 +1,3108 @@
+{
+  "components": {
+    "sessions": {
+      "id": "sessions",
+      "name": "sessions",
+      "type": "module",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Core Agent session and history module",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "session_manager": {
+      "id": "session_manager",
+      "name": "SessionManager",
+      "type": "class",
+      "parent_id": "sessions",
+      "implements_id": null,
+      "description": "Decoupled File-System Persistence Repository managing session JSON files and companion sidecars.",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": {
+        "type": "object",
+        "properties": {
+          "storage_dir": {
+            "type": "object",
+            "title": "Path"
+          },
+          "session_suffix": {
+            "type": "string"
+          },
+          "meta_suffix": {
+            "type": "string"
+          },
+          "checkpoint_separator": {
+            "type": "string"
+          },
+          "scratch_dir_name": {
+            "type": "string"
+          },
+          "tool_log_prefix": {
+            "type": "string"
+          },
+          "tool_log_suffix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "storage_dir",
+          "session_suffix",
+          "meta_suffix",
+          "checkpoint_separator",
+          "scratch_dir_name",
+          "tool_log_prefix",
+          "tool_log_suffix"
+        ]
+      },
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "agent_session": {
+      "id": "agent_session",
+      "name": "AgentSession",
+      "type": "class",
+      "parent_id": "sessions",
+      "implements_id": null,
+      "description": "Pure Domain Entity containing conversation history and session metadata, completely decoupled from persistence or transport.",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "chat_history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "ChatMessage"
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "title": "SessionMetadataPayload"
+          }
+        },
+        "required": [
+          "session_id",
+          "chat_history",
+          "metadata"
+        ]
+      },
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "session_manager_save_session": {
+      "id": "session_manager_save_session",
+      "name": "save_session",
+      "type": "function",
+      "parent_id": "session_manager",
+      "implements_id": null,
+      "description": "Asynchronously serializes and persists a session and its companion meta sidecar to disk.",
+      "status": "existing",
+      "stage": "declared",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "object",
+            "title": "AgentSession"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [
+        {
+          "target": "fs",
+          "description": "Writes session json and metadata sidecar files to disk"
+        }
+      ],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "session_manager_load_session": {
+      "id": "session_manager_load_session",
+      "name": "load_session",
+      "type": "function",
+      "parent_id": "session_manager",
+      "implements_id": null,
+      "description": "Asynchronously loads and parses a session file from disk by ID.",
+      "status": "existing",
+      "stage": "declared",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "checkpoint_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "session_id"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "object",
+            "title": "AgentSession"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "side_effects": [
+        {
+          "target": "fs",
+          "description": "Reads session file from disk"
+        }
+      ],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "bus": {
+      "id": "bus",
+      "name": "bus",
+      "type": "module",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Asynchronous Event Pub/Sub Message Bus core module",
+      "status": "existing",
+      "stage": "declared",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "message_bus": {
+      "id": "message_bus",
+      "name": "MessageBus",
+      "type": "class",
+      "parent_id": "bus",
+      "implements_id": null,
+      "description": "An asynchronous, thread-safe pub/sub router used to distribute execution telemetry and confirmation requests.",
+      "status": "existing",
+      "stage": "declared",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "message_bus_subscribe": {
+      "id": "message_bus_subscribe",
+      "name": "subscribe",
+      "type": "function",
+      "parent_id": "message_bus",
+      "implements_id": null,
+      "description": "Attaches a listener coroutine to observe specific event topics.",
+      "status": "existing",
+      "stage": "declared",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "event_type": {
+            "type": "string"
+          },
+          "callback": {
+            "type": "object",
+            "title": "any"
+          }
+        },
+        "required": [
+          "event_type",
+          "callback"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "subscription_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscription_id"
+        ]
+      },
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "message_bus_publish": {
+      "id": "message_bus_publish",
+      "name": "publish",
+      "type": "function",
+      "parent_id": "message_bus",
+      "implements_id": null,
+      "description": "Broadcasts an event envelope to all active topic subscribers.",
+      "status": "existing",
+      "stage": "declared",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "object",
+            "title": "dict"
+          }
+        },
+        "required": [
+          "event"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "uds_server_module": {
+      "id": "uds_server_module",
+      "name": "uds_server",
+      "type": "module",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "New asynchronous Unix Domain Socket transport and JSON-RPC 2.0 communication daemon.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "active_session_state": {
+      "id": "active_session_state",
+      "name": "ActiveSessionState",
+      "type": "data_object",
+      "parent_id": "uds_server_module",
+      "implements_id": null,
+      "description": "A thread-safe structure mapping an active session context to its running asyncio telemetry and execution tasks.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "object",
+            "title": "AgentSession"
+          },
+          "telemetry_task": {
+            "type": "object",
+            "title": "any"
+          },
+          "executor_task": {
+            "anyOf": [
+              {
+                "type": "object",
+                "title": "any"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "session",
+          "telemetry_task"
+        ]
+      },
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": [
+        {
+          "task": "Define ActiveSessionState dataclass fields with appropriate type annotations.",
+          "completed": true
+        }
+      ]
+    },
+    "uds_server_class": {
+      "id": "uds_server_class",
+      "name": "UdsServer",
+      "type": "class",
+      "parent_id": "uds_server_module",
+      "implements_id": null,
+      "description": "The Unix Domain Socket daemon listener. Manages the asyncio network socket, incoming reader/writer streams, and active session registries.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": {
+        "type": "object",
+        "properties": {
+          "socket_path": {
+            "type": "object",
+            "title": "Path"
+          },
+          "session_manager": {
+            "type": "object",
+            "title": "SessionManager"
+          },
+          "active_sessions": {
+            "type": "object",
+            "title": "dict"
+          }
+        },
+        "required": [
+          "socket_path",
+          "session_manager",
+          "active_sessions"
+        ]
+      },
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": [
+        {
+          "task": "TDD & Test Framework: Design and implement a robust integration test suite (e.g., tests/test_uds_server.py) verifying socket startup, client connection lifecycle, request routing, telemetry streaming, and clean teardowns using real asyncio loops and sockets without over-mocking (Guideline 12).",
+          "completed": true
+        },
+        {
+          "task": "Class Structure & Strong Typing: Create the UdsServer class container with strongly typed properties for socket_path (Path), session_manager (SessionManager), and active_sessions (dict). Initialize active_sessions as an empty dict thread-safely (Guideline 6).",
+          "completed": true
+        },
+        {
+          "task": "Initialization & Low-level Primitives: Keep low-level primitives parameter-agnostic; configurations must originate at top-most layers. Centralize socket paths and default parameters to prevent premature default assignment and magic literals (Guideline 2 & 3).",
+          "completed": true
+        },
+        {
+          "task": "Idempotent Socket Binding: In start(), implement idempotent, safe socket file unlinking and binding. Ensure double-initialization is handled cleanly and safely without raising side-effects or leaking socket references (Guideline 13).",
+          "completed": true
+        },
+        {
+          "task": "Flat Stream & Connection Handling: In handle_connection(), read newline-delimited frames utilizing early exits and guard clauses to keep the 'happy path' flat and readable, preventing deep nesting and arrow code (Guideline 4).",
+          "completed": true
+        },
+        {
+          "task": "Loud Failure & Error Context: Handle socket reading and decoding errors by failing loudly with rich error context (using JsonRpcCodec to generate JSON-RPC error frames) rather than catching silently or performing silent raw flushes (Guideline 1).",
+          "completed": true
+        },
+        {
+          "task": "Resource Lifecycle & Async Task Cleanup: In cleanup_session(), guarantee robust cancellation and cleanup of background streaming tasks. Use language-native try-finally or async-with scope managers to prevent task/memory leaks (Guideline 7).",
+          "completed": true
+        },
+        {
+          "task": "Decoupled Routing & Separation of Concerns: In dispatch_request(), maintain a strict unidirectional boundary. Delegate decoding and encoding to JsonRpcCodec (Guideline 9), and execute core logic separately from transport details (Guideline 5).",
+          "completed": true
+        },
+        {
+          "task": "Clean Up & Static Analysis: Clean up all unused imports, dead pathways, and update docstrings to represent exact behaviors. Run static analysis (mypy, ruff) and run the full test suite to guarantee high cohesion and focus (Guideline 10 & 11).",
+          "completed": true
+        }
+      ]
+    },
+    "uds_server_start": {
+      "id": "uds_server_start",
+      "name": "start",
+      "type": "function",
+      "parent_id": "uds_server_class",
+      "implements_id": null,
+      "description": "Starts the asynchronous UDS server daemon. Cleans up any stale pre-existing socket files before binding.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "socket_path": {
+            "type": "object",
+            "title": "Path"
+          }
+        },
+        "required": [
+          "socket_path"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [
+        {
+          "target": "network",
+          "description": "Unlinks stale socket file and binds the start_unix_server loop"
+        }
+      ],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "socket_path_configured",
+            "type": "pre_condition",
+            "description": "self.socket_path must be configured."
+          },
+          {
+            "name": "server_cleanup_safe",
+            "type": "state_invariant",
+            "description": "Pre-existing socket file is safely removed before binding."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Check running server",
+            "description": "If server is already running, log informational message and exit early.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Cleanup existing socket",
+            "description": "Check if socket file exists on disk, and unlink/delete it to prevent address-already-in-use errors.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Start Unix server",
+            "description": "Call asyncio.start_unix_server passing handle_connection and path=socket_str, saving the server instance.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Implement start method to check running status, clean up stale socket, start asyncio Unix server with handle_connection, and log state.",
+          "completed": true
+        }
+      ]
+    },
+    "uds_server_handle_connection": {
+      "id": "uds_server_handle_connection",
+      "name": "handle_connection",
+      "type": "function",
+      "parent_id": "uds_server_class",
+      "implements_id": null,
+      "description": "Manages a client's asynchronous read/write streams. Parses newline-delimited frames and cleans up resources on EOF.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "reader": {
+            "type": "object",
+            "title": "any"
+          },
+          "writer": {
+            "type": "object",
+            "title": "any"
+          }
+        },
+        "required": [
+          "reader",
+          "writer"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [
+        {
+          "target": "network",
+          "description": "Monitors socket read streams and handles resource cleanup on client socket disconnect"
+        }
+      ],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "reader_writer_active",
+            "type": "pre_condition",
+            "description": "reader and writer must be active stream objects."
+          },
+          {
+            "name": "resource_cleanup_guarantee",
+            "type": "state_invariant",
+            "description": "All bound sessions and writer resources must be cleaned up on connection termination."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Initialize tracking",
+            "description": "Create bound_sessions list to track session IDs registered on this connection.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Read line loop",
+            "description": "Loop reading lines from the reader. Break the loop if EOF is read.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Parse JSON frame",
+            "description": "Decode and parse line as JSON. Write JSON-RPC parse error on failure and continue.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Dispatch request",
+            "description": "Dispatch parsed frame via dispatch_request.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 5,
+            "name": "Cleanup resources",
+            "description": "In a finally block, clean up all bound sessions, close the writer, and wait for it to close.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Implement handle_connection to manage client stream, parse frames, dispatch requests, and guarantee full resource cleanup in finally block.",
+          "completed": true
+        }
+      ]
+    },
+    "uds_server_dispatch_request": {
+      "id": "uds_server_dispatch_request",
+      "name": "dispatch_request",
+      "type": "function",
+      "parent_id": "uds_server_class",
+      "implements_id": null,
+      "description": "Core request router. Decodes payload, validates JSON-RPC schema, and invokes session handlers with a flat routing structure.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "string"
+          },
+          "writer": {
+            "type": "object",
+            "title": "any"
+          }
+        },
+        "required": [
+          "payload",
+          "writer"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "writer_active",
+            "type": "pre_condition",
+            "description": "writer must be an active stream writer."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Extract request parameters",
+            "description": "Read frame parameters including msg_id, method, and params, decoding or parsing payload if necessary.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Validate JSON-RPC protocol version",
+            "description": "Verify jsonrpc field is '2.0'. If not, write and drain Invalid Request error (-32600).",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Validate method presence",
+            "description": "Verify method is provided. If not, write and drain Method not found error (-32600).",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Route method",
+            "description": "Route requests to _handle_session_start, _handle_session_send_prompt, or _handle_session_close, or return Method not found (-32601).",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 5,
+            "name": "Handle errors",
+            "description": "Catch JsonRpcError or generic Exception, format error payload using JsonRpcCodec, and write/drain onto writer stream.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Implement dispatch_request method to validate JSON-RPC frames, route requests to correct session handlers, and write appropriate error frames on failure.",
+          "completed": true
+        }
+      ]
+    },
+    "uds_server_stream_session_telemetry": {
+      "id": "uds_server_stream_session_telemetry",
+      "name": "stream_session_telemetry",
+      "type": "function",
+      "parent_id": "uds_server_class",
+      "implements_id": null,
+      "description": "Long-running task that subscribes to the session's MessageBus. Translates and writes telemetry notifications directly onto the client socket stream.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "object",
+            "title": "AgentSession"
+          },
+          "writer": {
+            "type": "object",
+            "title": "any"
+          }
+        },
+        "required": [
+          "session",
+          "writer"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [
+        {
+          "target": "network",
+          "description": "Streams live formatted telemetry notifications to client socket"
+        }
+      ],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "writer_active",
+            "type": "pre_condition",
+            "description": "writer must be an active stream writer."
+          },
+          {
+            "name": "bus_listener_cleanup",
+            "type": "state_invariant",
+            "description": "Listener must be unsubscribed from the MessageBus on task cancellation or completion."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Initialize telemetry queue",
+            "description": "Create an asyncio.Queue and define an async listener callback that queues events.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Subscribe to event bus",
+            "description": "Subscribe listener callback to MessageBus event types for telemetry logs and model activities.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Process events loop",
+            "description": "Loop waiting for and retrieving events from the queue.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Format and stream telemetry",
+            "description": "Encode event payloads into JSON-RPC notification frames and write/drain them to client stream.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 5,
+            "name": "Clean up subscription",
+            "description": "In a finally block, unsubscribe listener callback from MessageBus to prevent memory leaks.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Implement stream_session_telemetry as a long-running task that queues and streams events, safely cleaning up the MessageBus subscription in a finally block.",
+          "completed": true
+        }
+      ]
+    },
+    "json_rpc_codec_class": {
+      "id": "json_rpc_codec_class",
+      "name": "JsonRpcCodec",
+      "type": "class",
+      "parent_id": "uds_server_module",
+      "implements_id": null,
+      "description": "Protocol helper to compile JSON-RPC 2.0 frames, responses, error payloads, and streaming notifications, strictly appending newline delimiters.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": [
+        {
+          "task": "Design and implement comprehensive unit tests (e.g., tests/test_json_rpc_codec.py) to verify serialization of success responses, error payloads, and notifications, verifying real execution flows without over-mocking (Guideline 12).",
+          "completed": true
+        },
+        {
+          "task": "Create the JsonRpcCodec class container with class-level constants for protocol version '2.0' and delimiter '\\n' to prevent magic inline values (Guideline 2).",
+          "completed": true
+        },
+        {
+          "task": "Implement method-level argument verification with early-exit guard clauses to raise explicit, loudly failing errors on malformed parameters (Guideline 1, 3 & 4) and use strong python typing (Guideline 6).",
+          "completed": true
+        },
+        {
+          "task": "Implement clean, pure serialization logic that appends the newline delimiter, ensuring zero side-effects (Guideline 5 & 8) and clean docstrings/comments (Guideline 10). Run static analysis (mypy, ruff) and python unittests to verify.",
+          "completed": true
+        }
+      ]
+    },
+    "json_rpc_codec_encode_response": {
+      "id": "json_rpc_codec_encode_response",
+      "name": "encode_response",
+      "type": "function",
+      "parent_id": "json_rpc_codec_class",
+      "implements_id": null,
+      "description": "Compiles a standard JSON-RPC 2.0 success response payload, appending a newline delimiter.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "result": {
+            "type": "object",
+            "title": "any"
+          }
+        },
+        "required": [
+          "id",
+          "result"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "payload"
+        ]
+      },
+      "side_effects": [],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "result_is_dict",
+            "type": "pre_condition",
+            "description": "result must be a dictionary."
+          },
+          {
+            "name": "msg_id_type",
+            "type": "pre_condition",
+            "description": "msg_id must be int or str."
+          },
+          {
+            "name": "newline_terminated",
+            "type": "post_condition",
+            "description": "Returned payload must be newline delimited and encoded."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Validate inputs",
+            "description": "Ensure result is a dictionary and msg_id is an integer or string.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Construct response payload",
+            "description": "Construct standard JSON-RPC 2.0 response dictionary containing jsonrpc, result, and id.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Serialize and delimit",
+            "description": "Serialize the dictionary to JSON, append a newline delimiter, and encode to UTF-8 bytes.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Implement encode_response to validate types, construct standard response dictionary, serialize to JSON, append a newline delimiter, and encode to UTF-8.",
+          "completed": true
+        }
+      ]
+    },
+    "json_rpc_codec_encode_error": {
+      "id": "json_rpc_codec_encode_error",
+      "name": "encode_error",
+      "type": "function",
+      "parent_id": "json_rpc_codec_class",
+      "implements_id": null,
+      "description": "Compiles a standard JSON-RPC 2.0 error frame with custom exception names, codes, and diagnostic metadata.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "code": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "type": "object",
+                "title": "any"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "payload"
+        ]
+      },
+      "side_effects": [],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "code_is_integer",
+            "type": "pre_condition",
+            "description": "code must be an integer."
+          },
+          {
+            "name": "message_is_string",
+            "type": "pre_condition",
+            "description": "message must be a string."
+          },
+          {
+            "name": "msg_id_type",
+            "type": "pre_condition",
+            "description": "msg_id must be int, str, or None."
+          },
+          {
+            "name": "newline_terminated",
+            "type": "post_condition",
+            "description": "Returned payload must be newline delimited and encoded."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Validate inputs",
+            "description": "Ensure code is integer, message is string, and msg_id is an integer, string, or None.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Construct error payload",
+            "description": "Construct standard JSON-RPC 2.0 error response dictionary containing jsonrpc, error (with code and message), and msg_id.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Add custom data",
+            "description": "If optional data is provided, append it to the nested error dictionary.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Serialize and delimit",
+            "description": "Serialize the dictionary to JSON, append a newline delimiter, and encode to UTF-8 bytes.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Implement encode_error to validate input types, construct standard error dictionary with option data, serialize to JSON, append a newline delimiter, and encode to UTF-8.",
+          "completed": true
+        }
+      ]
+    },
+    "json_rpc_codec_encode_notification": {
+      "id": "json_rpc_codec_encode_notification",
+      "name": "encode_notification",
+      "type": "function",
+      "parent_id": "json_rpc_codec_class",
+      "implements_id": null,
+      "description": "Compiles a JSON-RPC 2.0 streaming notification frame (no ID parameter), appending a newline delimiter.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object",
+            "title": "any"
+          }
+        },
+        "required": [
+          "method",
+          "params"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "payload"
+        ]
+      },
+      "side_effects": [],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "method_is_string",
+            "type": "pre_condition",
+            "description": "method must be a string."
+          },
+          {
+            "name": "method_not_empty",
+            "type": "pre_condition",
+            "description": "method cannot be empty or whitespace-only."
+          },
+          {
+            "name": "params_is_dict",
+            "type": "pre_condition",
+            "description": "params must be a dictionary."
+          },
+          {
+            "name": "newline_terminated",
+            "type": "post_condition",
+            "description": "Returned payload must be newline delimited and encoded."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Validate inputs",
+            "description": "Ensure method is a non-empty string and params is a dictionary.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Construct notification payload",
+            "description": "Construct standard JSON-RPC 2.0 notification dictionary containing jsonrpc, method, and params.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Serialize and delimit",
+            "description": "Serialize the dictionary to JSON, append a newline delimiter, and encode to UTF-8 bytes.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Implement encode_notification to validate types and presence, construct standard notification dictionary, serialize to JSON, append a newline delimiter, and encode to UTF-8.",
+          "completed": true
+        }
+      ]
+    },
+    "mock_executor_module": {
+      "id": "mock_executor_module",
+      "name": "mock_executor",
+      "type": "module",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Modular mock agent executor containing simulated conversational reasoning, thoughts, and diff generator tools.",
+      "status": "modifying",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "separation_of_concerns",
+            "type": "state_invariant",
+            "description": "The mock executor must not perform any socket communication or serialization."
+          },
+          {
+            "name": "fail_loudly",
+            "type": "post_condition",
+            "description": "Must raise ValueError on error trigger rather than failing silently."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Extract MockAgentExecutor",
+            "description": "Extract the simulation loop into src/engine/mock_executor.py to maintain separation of concerns.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Centralize literals",
+            "description": "Centralize literal triggers, latencies, and payloads into typed variables.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Raise errors loudly",
+            "description": "Ensure any simulated error triggers raise a ValueError with descriptive context.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Add unit tests",
+            "description": "Verify execution scenarios and telemetry via pytest without over-mocking.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Extract MockAgentExecutor from uds_server.py into its own dedicated cohesive module 'src/engine/mock_executor.py' (Principle 5, Principle 11).",
+          "completed": true
+        },
+        {
+          "task": "Centralize all inline literal mock payloads, keyword trigger strings, and mock latencies into constants or variables (Principle 2).",
+          "completed": true
+        },
+        {
+          "task": "Add explicit type annotations for parameters and return types across MockAgentExecutor functions (Principle 6).",
+          "completed": true
+        },
+        {
+          "task": "Ensure requested failures raise ValueError loudly with descriptive context, avoiding silent catch blocks (Principle 1).",
+          "completed": true
+        },
+        {
+          "task": "Clean up uds_server.py by removing the inline MockAgentExecutor class, updating its imports, docstrings, and references (Principle 10).",
+          "completed": true
+        },
+        {
+          "task": "Add unit and integration tests specifically testing MockAgentExecutor's behavior across scenarios without over-mocking the MessageBus (Principle 12).",
+          "completed": true
+        }
+      ]
+    },
+    "mock_agent_executor_class": {
+      "id": "mock_agent_executor_class",
+      "name": "MockAgentExecutor",
+      "type": "class",
+      "parent_id": "mock_executor_module",
+      "implements_id": null,
+      "description": "Simulates the asynchronous execution loop of the real LocalAgentExecutor, matching its interfaces and emitting standard bus telemetries.",
+      "status": "modifying",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "mock_agent_executor_run": {
+      "id": "mock_agent_executor_run",
+      "name": "run",
+      "type": "function",
+      "parent_id": "mock_agent_executor_class",
+      "implements_id": null,
+      "description": "Triggers mock agent generation. Parses prompt keywords, sleeps with non-blocking delays to mimic API latency, broadcasts thoughts onto the bus, and saves session files at completion.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "object",
+            "title": "AgentSession"
+          },
+          "prompt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "prompt"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [
+        {
+          "target": "bus",
+          "description": "Publishes events like telemetry:thought and telemetry:activity"
+        },
+        {
+          "target": "fs",
+          "description": "Calls save_session on completion"
+        }
+      ],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "valid_arguments",
+            "type": "pre_condition",
+            "description": "session is an AgentSession instance and prompt is a string."
+          },
+          {
+            "name": "guaranteed_turn_end",
+            "type": "post_condition",
+            "description": "MODEL_END event must always be published, ensuring the message bus and session don't get stuck in an active state."
+          },
+          {
+            "name": "descriptive_error_on_failure",
+            "type": "post_condition",
+            "description": "ValueError must be raised with a descriptive context and snippet when error trigger keywords are matched."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Validate Input Parameters",
+            "description": "Assert that 'session' is an instance of AgentSession and 'prompt' is a string. Raise TypeError if validation fails.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Publish Model Start",
+            "description": "Publish a MODEL_START Activity event to the MessageBus containing the prompt length.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Process Prompt and Simulate Latency",
+            "description": "Check lowercase prompt against keywords. If error keyword is present, publish error telemetry log and raise ValueError. If thinking/edit keywords are present, publish respective telemetry logs and sleep for non-blocking latency. Otherwise, publish default response telemetry log and sleep.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Publish Model End",
+            "description": "In a finally block, publish a MODEL_END Activity event to the MessageBus to ensure execution state consistency.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Define mock telemetry payloads, default triggers and latencies",
+          "completed": true
+        },
+        {
+          "task": "Validate inputs of run function and publish MODEL_START event",
+          "completed": true
+        },
+        {
+          "task": "Implement prompt keyword parsing and conditional mock telemetry dispatch",
+          "completed": true
+        },
+        {
+          "task": "Implement finally block to guarantee MODEL_END event is published",
+          "completed": true
+        },
+        {
+          "task": "Create unit tests in tests/test_mock_executor.py covering all simulation flows",
+          "completed": true
+        }
+      ]
+    },
+    "nvim_client_module": {
+      "id": "nvim_client_module",
+      "name": "nvim_client",
+      "type": "module",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Client-side Neovim Lua plugin modules coordinating layouts, keystroke intercepts, and Libuv sockets.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "idempotent_setup",
+            "type": "state_invariant",
+            "description": "Calling setup() multiple times must not register duplicate commands, autocommands, or event listeners."
+          },
+          {
+            "name": "no_resource_leaks",
+            "type": "state_invariant",
+            "description": "All active Libuv pipe handles, buffer attachments, and extmarks must be tracked and fully cleaned up on teardown."
+          },
+          {
+            "name": "fail_loudly_on_errors",
+            "type": "post_condition",
+            "description": "Any network failure, deserialization error, or boot failure must raise or log explicit errors with full context, avoiding silent failures."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Verify and establish directory hierarchy",
+            "description": "Ensure the directory tree under lua/code_savant/ exists and matches Neovim's runtimepath search structures.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Establish baseline and user configurations",
+            "description": "Define a default config schema and implement logic to merge user-overridable settings, avoiding inline literals and magic values.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Initialize and sequence child sub-modules",
+            "description": "Construct and orchestrate initialization of nvim_client_init_class, nvim_client_network_class, and nvim_client_ui_class, binding networking streaming events to buffer listeners.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Implement setup entrypoint and guard against duplicate execution",
+            "description": "Create setup(opts) to register custom user commands, autocommands, and buffers, executing early exits and idempotent checks.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "TDD Integration Testing Setup: Design and implement integration tests in tests/test_nvim_client_module.lua using busted or a mock Neovim environment to verify integration between boot configurations, socket streams, and UI rendering (Guideline 8, 12)",
+          "completed": true
+        },
+        {
+          "task": "Directory Setup & File Structure: Create the plugin file layout under lua/code_savant/ (including init.lua, network.lua, ui.lua) with comprehensive EmmyLua type annotations and modular file separation (Guideline 6, 11)",
+          "completed": true
+        },
+        {
+          "task": "Centralize Configurations & Constants: Move all magic inline literals, static preferences, commands, buffer settings, and namespaces into centralized tables/constants to avoid raw inline values (Guideline 2)",
+          "completed": true
+        },
+        {
+          "task": "Implement Configuration Bootstrapping: Write the setup configuration merger, keeping low-level socket and UI primitives parameter-agnostic and allowing configurations to only originate from top-level setup() calls (Guideline 3, 4)",
+          "completed": true
+        },
+        {
+          "task": "Implement Idempotent setup() and Fail Loudly: Implement setup() with clear early exits, guard clauses, and a state check to guarantee idempotent double-initialization safety, raising clean error contexts if required dependencies are missing (Guideline 1, 4, 13)",
+          "completed": true
+        },
+        {
+          "task": "Resource Lifecycle & Teardown: Design an explicit teardown/shutdown function that safely closes active Libuv pipes, detaches buffer attachments, and removes UI extmark namespaces to ensure no resource leaks (Guideline 7, 13)",
+          "completed": true
+        },
+        {
+          "task": "Refactoring & Cleanup: Clean up all prototyping leftovers, unused imports/variables, and ensure all docstrings/EmmyLua comments are fully updated and accurate (Guideline 10)",
+          "completed": true
+        }
+      ]
+    },
+    "nvim_client_init_class": {
+      "id": "nvim_client_init_class",
+      "name": "nvim_client_init",
+      "type": "class",
+      "parent_id": "nvim_client_module",
+      "implements_id": null,
+      "description": "Handles the plugin's boot configurations, user preferences, custom commands, and scratch-buffer generation routines.",
+      "status": "modifying",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": [
+        {
+          "task": "TDD Setup: Design and implement unit tests first (TDD) using a Neovim Lua testing framework (such as busted) checking boot configurations, idempotent command bindings, and scratch-buffer generation flows (Guideline 8, 12)",
+          "completed": true
+        },
+        {
+          "task": "Constants & Configurations: Define all default preferences, magic strings, filetypes (code_savant_chat), command names, and buffer options as explicit constants and EmmyLua types to avoid magic inline values (Guideline 2, 6)",
+          "completed": true
+        },
+        {
+          "task": "Boot Initialization & Input Validation: Implement the main entry-point/constructor that parses and validates configurations, failing loudly with precise diagnostic context if inputs are malformed (Guideline 1, 3)",
+          "completed": true
+        },
+        {
+          "task": "Idempotent Command Registration: Implement custom command registration (e.g. :CodeSavantChat) and autocommands using early exits and guard clauses to keep happy path flat and safe against double-initialization (Guideline 4, 13)",
+          "completed": true
+        },
+        {
+          "task": "Scratch-Buffer Generation: Implement the create_chat_buffer handler to allocate a new non-persisted scratch buffer with code_savant_chat filetype, disabled swapfile, and cleanup handlers to prevent memory/file resource leaks (Guideline 7, 13)",
+          "completed": true
+        },
+        {
+          "task": "Refactoring & Documentation: Clean up any prototype leftovers, remove unused imports or local variables, and provide comprehensive EmmyLua docstrings (Guideline 10)",
+          "completed": true
+        }
+      ]
+    },
+    "nvim_client_network_class": {
+      "id": "nvim_client_network_class",
+      "name": "nvim_client_network",
+      "type": "class",
+      "parent_id": "nvim_client_module",
+      "implements_id": null,
+      "description": "Low-level Libuv binding layer that opens dedicated pipe streams per-buffer and serializes outgoing JSON-RPC requests.",
+      "status": "modifying",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": [
+        {
+          "task": "TDD Setup: Implement Busted unit tests for packet accumulator (Guideline 12)",
+          "completed": true
+        },
+        {
+          "task": "Constants & Types: Centralize magic values as constants and EmmyLua types (Guidelines 2, 6)",
+          "completed": true
+        },
+        {
+          "task": "Idempotent Connect: Implement connect function safely against double-initialization (Guidelines 3, 13)",
+          "completed": true
+        },
+        {
+          "task": "JSON-RPC Serialization: Implement send_prompt to serialize and transmit newline-delimited prompt payloads (Guideline 11)",
+          "completed": true
+        },
+        {
+          "task": "Stream Parsing: Implement on_read utilizing early exits to handle chunk accumulation and decode JSON-RPC frames (Guidelines 1, 4)",
+          "completed": true
+        },
+        {
+          "task": "Lifecycle & Resource Cleanup: Integrate active pipe tracking to guarantee clean stream teardown and prevent fd leaks (Guideline 7)",
+          "completed": true
+        },
+        {
+          "task": "Refactoring & Documentation: Clean up dead code and stale comments; add robust EmmyLua docs (Guideline 10)",
+          "completed": true
+        }
+      ]
+    },
+    "nvim_client_ui_class": {
+      "id": "nvim_client_ui_class",
+      "name": "nvim_client_ui",
+      "type": "class",
+      "parent_id": "nvim_client_module",
+      "implements_id": null,
+      "description": "Controls rendering and layout. Formats Nerd Fonts, runs in-buffer extmark toggle offsets, and attaches bytes listeners to restrict input editing.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": [
+        {
+          "task": "Design and Implement Unit Tests First (TDD) in tests/test_nvim_client_ui.py checking collapsing, expansion, and bytes interception using high-fidelity Neovim API mocks.",
+          "completed": true
+        },
+        {
+          "task": "Centralize all configuration constants, namespace names, and Nerd Font glyphs in constants or Typed Enums to avoid magic values.",
+          "completed": true
+        },
+        {
+          "task": "Implement UI Class Initialization with injected Neovim API client dependency and initialize internal collapsed blocks cache.",
+          "completed": true
+        },
+        {
+          "task": "Implement on_collapsed_block handler with early return guard clauses and idempotent Neovim extmarks anchoring under a dedicated namespace.",
+          "completed": true
+        },
+        {
+          "task": "Implement expand_inplace handler to locate extmarks, inject cached block text inline, and safely recalculate line range dimensions with verbose error context.",
+          "completed": true
+        },
+        {
+          "task": "Implement on_bytes_listener interception hook with idempotent attachment to prevent double-listener registration, safely rolling back unauthorized edits targeting historical lines.",
+          "completed": true
+        },
+        {
+          "task": "Add explicit teardown logic/destructors to guarantee neovim listeners and extmarks are cleaned up, avoiding resource leaks.",
+          "completed": true
+        }
+      ]
+    },
+    "nvim_client_init_create_chat_buffer": {
+      "id": "nvim_client_init_create_chat_buffer",
+      "name": "create_chat_buffer",
+      "type": "function",
+      "parent_id": "nvim_client_init_class",
+      "implements_id": null,
+      "description": "Allocates a new, non-persisted scratch buffer with filetype 'code_savant_chat' and disabled swaps.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "bufnr": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bufnr"
+        ]
+      },
+      "side_effects": [],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "uv_executable_precondition",
+            "type": "pre_condition",
+            "description": "If local '.venv' is missing, 'uv' must be executable on PATH, otherwise fail loudly with clear error details."
+          },
+          {
+            "name": "idempotent_bootstrap_spawn",
+            "type": "state_invariant",
+            "description": "Concurrent or repeated calls during bootstrapping must not launch duplicate background jobs."
+          },
+          {
+            "name": "scratch_buffer_configuration",
+            "type": "post_condition",
+            "description": "The returned buffer must have 'swapfile' disabled, 'buftype' set to 'nofile', and 'filetype' set to 'code_savant_chat'."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Verify Environment and UV Presence",
+            "description": "Check if the local '.venv' directory exists at the plugin root. If missing, check if 'uv' is on PATH. If 'uv' is missing, fail loudly and raise an error immediately.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Launch Non-blocking Bootstrap Job",
+            "description": "If '.venv' is missing and 'uv' is available, launch 'uv sync' in the plugin root as an asynchronous, non-blocking background job if no bootstrap is already in progress.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Allocate Scratch Buffer",
+            "description": "Invoke vim.api.nvim_create_buf(false, true) to allocate a new unlisted scratch buffer on Neovim's side.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Apply Buffer-Local Options",
+            "description": "Configure the allocated buffer options: disable swapfile, set buftype to 'nofile', bufhidden to 'hide', and filetype to 'code_savant_chat' using centralized string constants.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 5,
+            "name": "Bind Cleanup Autocommands",
+            "description": "Set up buffer-local autocommands (e.g., BufWipeout) to ensure all bound resources and listeners are cleaned up cleanly on buffer close, preventing resource leaks.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "TDD Unit Testing Setup: Design and implement robust unit tests in spec/nvim_client_init_spec.lua (using busted) verifying local '.venv' checks, loud errors when 'uv' is missing from PATH, asynchronous non-blocking jobstart execution of 'uv sync', scratch buffer creation, and correct options configuration (Guideline 1, 8, 12).",
+          "completed": true
+        },
+        {
+          "task": "Centralize Configuration & Constants: Declare all static configuration values including filetype ('code_savant_chat'), buftype ('nofile'), bufhidden ('hide'), and the virtual environment folder name ('.venv') as explicit constants to avoid raw inline values (Guideline 2).",
+          "completed": true
+        },
+        {
+          "task": "Implement Bootstrapping Environment Checks: In create_chat_buffer (or nvim_client_init_class bootstrapping phase), check if '.venv' exists in the plugin's root. Use early exits and guard clauses to keep the flow flat and readable. If '.venv' is missing, verify 'uv' presence using vim.fn.executable('uv'), failing loudly with an explicit error if it's missing (Guideline 1, 4).",
+          "completed": true
+        },
+        {
+          "task": "Implement Asynchronous Bootstrap Job: Spawn 'uv sync' as a non-blocking background job using vim.fn.jobstart or vim.system when '.venv' is missing and 'uv' is on PATH. Track the bootstrap job status on nvim_client_init_class (e.g., self.bootstrap_in_progress) to prevent spawning duplicate background jobs concurrently (Guideline 13).",
+          "completed": true
+        },
+        {
+          "task": "Implement Scratch Buffer Allocation: Allocate an unlisted scratch buffer using vim.api.nvim_create_buf(false, true). Apply buffer-local options (buftype, swapfile, bufhidden, and filetype) using centralized constants (Guideline 3).",
+          "completed": true
+        },
+        {
+          "task": "Bind Cleanup Lifecycle Autocommands: Setup buffer-local BufWipeout autocommands to automatically release references and clean up associated listeners or background job resources when the buffer is closed, avoiding resource and file descriptor leaks (Guideline 7).",
+          "completed": true
+        },
+        {
+          "task": "Refactoring & Documentation: Clean up any obsolete prototyping leftovers, remove unused imports/variables, and supply full EmmyLua type annotations and docstrings (Guideline 10).",
+          "completed": true
+        }
+      ]
+    },
+    "nvim_client_network_connect": {
+      "id": "nvim_client_network_connect",
+      "name": "connect",
+      "type": "function",
+      "parent_id": "nvim_client_network_class",
+      "implements_id": null,
+      "description": "Asynchronously opens a dedicated Libuv pipe client stream mapped directly to a buffer.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "socket_path": {
+            "type": "string"
+          },
+          "bufnr": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "socket_path",
+          "bufnr"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "pipe": {
+            "type": "object",
+            "title": "any"
+          }
+        },
+        "required": [
+          "pipe"
+        ]
+      },
+      "side_effects": [
+        {
+          "target": "network",
+          "description": "Establishes client connection to the socket path"
+        }
+      ],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "non_empty_socket_path",
+            "type": "pre_condition",
+            "description": "The socket_path argument must be a non-empty string."
+          },
+          {
+            "name": "valid_bufnr",
+            "type": "pre_condition",
+            "description": "The bufnr argument must be a valid non-negative integer."
+          },
+          {
+            "name": "idempotent_connection",
+            "type": "state_invariant",
+            "description": "No redundant Libuv pipes or connection descriptors are leaked if connect is invoked multiple times for the same buffer."
+          },
+          {
+            "name": "loud_connection_failure",
+            "type": "state_invariant",
+            "description": "All socket connection errors in the callback must be checked and thrown/logged loudly with full context."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Parameter Validation",
+            "description": "Validate that socket_path is a non-empty string and bufnr is a valid positive integer >= 0. Fail loudly with rich context if invalid.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Idempotency Check",
+            "description": "Check if a network connection already exists for the given buffer. If a connection is already active, safely handle double-initialization to avoid descriptor/resource leaks.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Initialize Libuv Pipe",
+            "description": "Create a new Libuv pipe object (e.g. vim.loop.new_pipe(false)) to act as our local socket client stream.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Establish Connection",
+            "description": "Invoke the Libuv pipe's connect method asynchronously using the specified socket_path, supplying a connection callback.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 5,
+            "name": "Register Read Callback",
+            "description": "Immediately invoke pipe:read_start using the on_read_callback to listen for incoming server-sent frames, ensuring zero packet loss.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 6,
+            "name": "Return Pipe Handle",
+            "description": "Return the active, connecting pipe handle to the caller for state tracking.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "TDD connect: Implement Busted unit tests in tests/test_nvim_client_network_connect.lua to verify parameter validation, connection setup, and Mock Libuv loop (Guideline 12)",
+          "completed": true
+        },
+        {
+          "task": "Idempotent connect: Guard against double-initialization of socket connections per-bufnr using a connection registry (Guideline 13)",
+          "completed": true
+        },
+        {
+          "task": "Libuv connect implementation: Asynchronously create and connect the Libuv pipe handle, handle connection failures loudly with context (Guideline 1)",
+          "completed": true
+        },
+        {
+          "task": "Stream reading start: Bind on_read handler immediately upon connection to ensure no incoming data frames are missed (Guideline 7)",
+          "completed": true
+        }
+      ]
+    },
+    "nvim_client_network_send_prompt": {
+      "id": "nvim_client_network_send_prompt",
+      "name": "send_prompt",
+      "type": "function",
+      "parent_id": "nvim_client_network_class",
+      "implements_id": null,
+      "description": "Asynchronously transmits user prompts in a structured JSON-RPC payload across the Libuv stream.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "pipe": {
+            "type": "object",
+            "title": "any"
+          },
+          "prompt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pipe",
+          "prompt"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [
+        {
+          "target": "network",
+          "description": "Transmits newline-delimited stream frames"
+        }
+      ],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "valid_active_pipe",
+            "type": "pre_condition",
+            "description": "The pipe argument must be a valid, active Libuv pipe handle."
+          },
+          {
+            "name": "non_empty_prompt",
+            "type": "pre_condition",
+            "description": "The prompt argument must be a non-empty string."
+          },
+          {
+            "name": "newline_framing_outbound",
+            "type": "state_invariant",
+            "description": "All written socket payloads must be terminated with exactly one newline ('\\n') character."
+          },
+          {
+            "name": "loud_write_failure",
+            "type": "state_invariant",
+            "description": "Any write errors in the Libuv callback must be thrown or logged loudly with full context."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Pre-flight Checks",
+            "description": "Verify pipe is active and not closed, and prompt is a non-empty string. Fail early on invalid parameters with rich context.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Construct JSON-RPC Payload",
+            "description": "Formulate a structured JSON-RPC payload containing the prompt message. Ensure RPC keys and method names are centralized in constants.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Serialize to String",
+            "description": "Convert the structured payload table into a serialized JSON string.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Enforce Newline Framing",
+            "description": "Suffix the serialized JSON string with exactly one trailing newline ('\\n') character to satisfy network framing invariants.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 5,
+            "name": "Asynchronous Stream Write",
+            "description": "Call the Libuv pipe's write method to transmit the framed payload asynchronously and non-blocking over the socket stream.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 6,
+            "name": "Write Callback Handling",
+            "description": "Check for write errors in the asynchronous write callback. Log and throw error with detailed diagnostic context if the write fails.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "TDD send_prompt: Create Busted unit tests in tests/test_nvim_client_network_send_prompt.lua simulating non-blocking socket writes and verifying mock payload delivery (Guideline 12)",
+          "completed": true
+        },
+        {
+          "task": "Payload construction & serialization: Build and serialize the JSON-RPC request payload using typed structures, centralizing method names as constants (Guidelines 2, 6)",
+          "completed": true
+        },
+        {
+          "task": "Newline framing transmission: Frame the serialized JSON payload with a trailing newline ('\\n') and write asynchronously via Libuv pipe write (Guideline 13)",
+          "completed": true
+        },
+        {
+          "task": "Loud write error callback: Implement write callback that checks for socket errors and propagates them with rich context instead of failing silently (Guideline 1)",
+          "completed": true
+        }
+      ]
+    },
+    "nvim_client_ui_on_collapsed_block": {
+      "id": "nvim_client_ui_on_collapsed_block",
+      "name": "on_collapsed_block",
+      "type": "function",
+      "parent_id": "nvim_client_ui_class",
+      "implements_id": null,
+      "description": "Asynchronously handles collapsed events, caches full content, appends Nerd Font markers locally, and anchors an extmark under a dedicated namespace.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "id": "str",
+        "type": "str",
+        "title": "str",
+        "full_content": "str"
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [
+        {
+          "target": "ui",
+          "description": "Mutates buffer to add collapsed virtual lines"
+        }
+      ],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "id_non_empty",
+            "type": "pre_condition",
+            "description": "Input 'id' must be a valid, non-empty string."
+          },
+          {
+            "name": "valid_buffer",
+            "type": "pre_condition",
+            "description": "The target buffer must be active, valid, and editable."
+          },
+          {
+            "name": "idempotent_extmark",
+            "type": "state_invariant",
+            "description": "Only one active extmark can exist for a given block 'id' in the buffer at any time."
+          },
+          {
+            "name": "non_blocking_draw",
+            "type": "state_invariant",
+            "description": "UI updates must be scheduled on the main event loop and rendered using non-blocking virtual text."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Validate parameters",
+            "description": "Verify that 'id', 'type', 'title', and 'full_content' are non-empty strings. Return early if invalid.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Cache block content",
+            "description": "Store 'full_content' and block metadata in the local 'collapsed_blocks_cache' dictionary under key 'id'.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Verify target chat buffer",
+            "description": "Retrieve the current active Neovim chat buffer. Throw a loud, descriptive error if it is invalid or closed.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Idempotently clear existing extmark",
+            "description": "Check if an extmark ID for this 'id' is already cached. If so, safely delete it from the buffer using 'nvim_buf_del_extmark'.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 5,
+            "name": "Format collapsed line marker",
+            "description": "Build the collapsed line display text using configured Nerd Font glyphs (e.g. ▶, 📁) and styling from centralized constants.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 6,
+            "name": "Anchor extmark with virtual text",
+            "description": "Register the new extmark under the dedicated namespace using 'nvim_buf_set_extmark', passing the formatted virtual text options.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 7,
+            "name": "Cache extmark association",
+            "description": "Store the returned extmark ID in the cache mapping against the block 'id' for future lookups and expansion.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Design and Implement Unit Tests First (TDD) in tests/test_nvim_client_ui.py verifying cache storage, virtual text formatting, and extmark placement.",
+          "completed": true
+        },
+        {
+          "task": "Implement input validation and early exit guards to handle empty IDs or null values safely.",
+          "completed": true
+        },
+        {
+          "task": "Implement logical idempotent cleanup that removes pre-existing extmarks for the same ID prior to placing a new one.",
+          "completed": true
+        },
+        {
+          "task": "Implement non-blocking virtual text construction and extmark registration using centralized Nerd Font glyphs and highlights under the dedicated namespace.",
+          "completed": true
+        }
+      ]
+    },
+    "nvim_client_ui_expand_inplace": {
+      "id": "nvim_client_ui_expand_inplace",
+      "name": "expand_inplace",
+      "type": "function",
+      "parent_id": "nvim_client_ui_class",
+      "implements_id": null,
+      "description": "Asynchronously expands cached contents inline under the corresponding target extmark, recalculating range dimensions cleanly.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [
+        {
+          "target": "ui",
+          "description": "Mutates buffer to replace virtual lines with cached multiline block content"
+        }
+      ],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "id_exists_in_cache",
+            "type": "pre_condition",
+            "description": "The block 'id' must actively exist in the collapsed blocks cache before expansion."
+          },
+          {
+            "name": "extmark_resolvable",
+            "type": "state_invariant",
+            "description": "The extmark associated with the collapsed block must be active and resolvable within Neovim."
+          },
+          {
+            "name": "flat_safe_injection",
+            "type": "state_invariant",
+            "description": "Inline text expansion must occur within a safe, non-blocking atomic transaction in the main thread."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Validate parameters",
+            "description": "Verify that 'id' is a valid, non-empty string. Return early or raise error if invalid.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Lookup cached block",
+            "description": "Retrieve the cached full block contents and extmark ID from 'self.collapsed_blocks_cache' using 'id'. If missing, throw a detailed, context-rich error.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Locate extmark position",
+            "description": "Call 'nvim_buf_get_extmark_by_id' with the dedicated namespace and cached extmark ID to find the active block's row/line index in the buffer.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Format expanded content",
+            "description": "Split the cached full content into lines and apply visual border decorators or indentation margins using centralized configuration styles.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 5,
+            "name": "Replace buffer lines",
+            "description": "Execute a non-blocking replacement of the virtual/collapsed line with the actual multi-line content inside an atomic buffer transaction.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 6,
+            "name": "Clean up old extmark and cache",
+            "description": "Delete the old collapsed extmark using 'nvim_buf_del_extmark' and remove the 'id' mapping from the active collapsed blocks cache.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Design and Implement Unit Tests First (TDD) in tests/test_nvim_client_ui.py checking expansion calculations, cached content lookup, and buffer editing.",
+          "completed": true
+        },
+        {
+          "task": "Implement guard clause checking ID presence in cache, raising clean exception with context if missing.",
+          "completed": true
+        },
+        {
+          "task": "Implement extmark lookup to locate line numbers dynamically in the active buffer.",
+          "completed": true
+        },
+        {
+          "task": "Implement atomic replacement of the collapsed line with multi-line content and clean up obsolete extmarks/cache entries.",
+          "completed": true
+        }
+      ]
+    },
+    "nvim_client_ui_on_bytes_listener": {
+      "id": "nvim_client_ui_on_bytes_listener",
+      "name": "on_bytes_listener",
+      "type": "function",
+      "parent_id": "nvim_client_ui_class",
+      "implements_id": null,
+      "description": "Buffer attach hook that intercepts keyboard insertions and deletions, rolling back edits that target ranges prior to the active prompt cursor line.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "bufnr": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bufnr"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [
+        {
+          "target": "ui",
+          "description": "Locks historical buffer text regions against modifications"
+        }
+      ],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "reentrancy_lock",
+            "type": "state_invariant",
+            "description": "The 'self.is_rolling_back' guard flag must be activated during rollback edits to prevent recursion loops."
+          },
+          {
+            "name": "read_only_protection",
+            "type": "pre_condition",
+            "description": "Any change targeting rows strictly less than the dynamic active prompt line must trigger a rollback."
+          },
+          {
+            "name": "fast_execution",
+            "type": "state_invariant",
+            "description": "Execution checks must have O(1) time complexity and complete within 1ms to prevent keystroke latency."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Check recursion guard",
+            "description": "If 'self.is_rolling_back' is true, immediately return and do nothing to prevent infinite listener triggers.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Extract change range",
+            "description": "Parse 'on_bytes' callback parameters to get the start row, deleted lines, and added lines of the edit.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Resolve protected boundary",
+            "description": "Retrieve the active cursor or prompt line threshold separating read-only history from current user input.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Detect editing violation",
+            "description": "Check if any part of the edited range lies strictly before the resolved protected boundary.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 5,
+            "name": "Perform safe rollback",
+            "description": "If violation is detected, set 'self.is_rolling_back' to true, schedule a silent undo or restoration callback via 'vim.schedule', and reset the guard flag afterward.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 6,
+            "name": "Notify user of read-only state",
+            "description": "Display a loud, styled, non-blocking warning to the user's command line indicating that historical context is locked.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Design and Implement Unit Tests First (TDD) in tests/test_nvim_client_ui.py checking rollback behavior, recursion guard, and active prompt lines boundary detection.",
+          "completed": true
+        },
+        {
+          "task": "Implement the recursion/re-entrancy guard to safely ignore edits triggered by internal rollbacks.",
+          "completed": true
+        },
+        {
+          "task": "Implement boundary checks using dynamic prompt lines to detect edits targeting read-only history.",
+          "completed": true
+        },
+        {
+          "task": "Implement rollback execution utilizing 'vim.schedule' to invoke undo safely, and notify user with non-blocking styled text.",
+          "completed": true
+        },
+        {
+          "task": "Implement clean teardown/un-registration of bytes listener to prevent resource and memory leaks.",
+          "completed": true
+        }
+      ]
+    },
+    "void": {
+      "id": "void",
+      "name": "void",
+      "type": "data_object",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Void representation of empty returns",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": [
+        {
+          "task": "Verify that the 'void' primitive is correctly registered as a schema-only DATA_OBJECT in the architecture registry.",
+          "completed": true
+        },
+        {
+          "task": "Verify that procedures returning 'void' are designed to fail loudly on internal errors (Guideline #1) and fully clean up any context lifecycles (Guideline #7).",
+          "completed": true
+        }
+      ]
+    },
+    "any": {
+      "id": "any",
+      "name": "any",
+      "type": "data_object",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Placeholder for any dynamic or untyped value",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": [
+        {
+          "task": "Verify that the 'any' primitive is correctly registered as a schema-only DATA_OBJECT in the architecture registry.",
+          "completed": true
+        },
+        {
+          "task": "Verify that handlers receiving 'any' fail loudly and early with rich context on invalid values, avoiding silent default assumptions (Guideline #1).",
+          "completed": true
+        }
+      ]
+    },
+    "dict": {
+      "id": "dict",
+      "name": "dict",
+      "type": "data_object",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Standard dictionary mapping keys to values",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": [
+        {
+          "task": "Verify that the 'dict' primitive is correctly registered as a schema-only DATA_OBJECT in the architecture registry.",
+          "completed": true
+        },
+        {
+          "task": "Validate that consumer components utilizing 'dict' avoid weak/broad typing (Guideline #6) by defining explicit property/item schemas where possible.",
+          "completed": true
+        }
+      ]
+    },
+    "Path": {
+      "id": "Path",
+      "name": "Path",
+      "type": "data_object",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "File system path reference",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "AgentSession": {
+      "id": "AgentSession",
+      "name": "AgentSession",
+      "type": "class",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Domain Entity containing conversation history and session metadata",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "SessionManager": {
+      "id": "SessionManager",
+      "name": "SessionManager",
+      "type": "class",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Decoupled File-System Persistence Repository managing session JSON files",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "ChatMessage": {
+      "id": "ChatMessage",
+      "name": "ChatMessage",
+      "type": "data_object",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Structure representing a single chat message in history",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "SessionMetadataPayload": {
+      "id": "SessionMetadataPayload",
+      "name": "SessionMetadataPayload",
+      "type": "data_object",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Structure representing metadata associated with a session",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": []
+    },
+    "uds_server_cleanup_session": {
+      "id": "uds_server_cleanup_session",
+      "name": "cleanup_session",
+      "type": "function",
+      "parent_id": "uds_server_class",
+      "implements_id": null,
+      "description": "Cleans up active session resources, cancels background streaming tasks, and removes the session from the active_sessions registry.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [
+        {
+          "target": "network",
+          "description": "Cancels associated streaming tasks and closes writer"
+        },
+        {
+          "target": "fs",
+          "description": "Optionally flushes session states"
+        }
+      ],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "session_id_is_string",
+            "type": "pre_condition",
+            "description": "session_id must be a string."
+          },
+          {
+            "name": "tasks_cancelled_safely",
+            "type": "state_invariant",
+            "description": "Both telemetry and executor tasks must be cancelled and gathered safely."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Retrieve and remove session state",
+            "description": "Pop the target session state from active_sessions dictionary, returning early if missing.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Cancel running tasks",
+            "description": "Invoke cancel() on the telemetry task and the executor task (if present and active).",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Await cancellation",
+            "description": "Await tasks using asyncio.gather with return_exceptions=True to clean up without raising unhandled CancelledErrors.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Implement _cleanup_session to pop active state, cancel telemetry and executor tasks, and await them safely using gather.",
+          "completed": true
+        }
+      ]
+    },
+    "str": {
+      "id": "str",
+      "name": "str",
+      "type": "data_object",
+      "parent_id": null,
+      "implements_id": null,
+      "description": "Standard string primitive representation",
+      "status": "existing",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": null,
+      "outputs": null,
+      "side_effects": [],
+      "implementation_spec": null,
+      "modification_tasks": [
+        {
+          "task": "Verify that the 'str' primitive is correctly registered as a schema-only DATA_OBJECT in the architecture registry.",
+          "completed": true
+        },
+        {
+          "task": "Verify that components consuming 'str' centralize all constants and magic values in variables/enums rather than raw string literals (Guideline #2).",
+          "completed": true
+        }
+      ]
+    },
+    "nvim_client_network_on_read": {
+      "id": "nvim_client_network_on_read",
+      "name": "on_read",
+      "type": "function",
+      "parent_id": "nvim_client_network_class",
+      "implements_id": null,
+      "description": "Libuv pipe read callback that listens to incoming socket bytes, processes newline-delimited JSON-RPC packets, and dispatches them to UI render handlers.",
+      "status": "new",
+      "stage": "implemented",
+      "location": null,
+      "properties": null,
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "pipe": {
+            "type": "object",
+            "title": "any"
+          },
+          "err": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "pipe"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "side_effects": [],
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "valid_pipe_handle",
+            "type": "pre_condition",
+            "description": "The pipe parameter must be a valid Libuv pipe object."
+          },
+          {
+            "name": "split_packet_resilience",
+            "type": "state_invariant",
+            "description": "The system must handle partial packets (split packets) and multiple coalesced packets in a single TCP chunk correctly without losing stream synchrony."
+          },
+          {
+            "name": "newline_framing_inbound",
+            "type": "state_invariant",
+            "description": "Frames must be extracted strictly based on newline ('\\n') boundary demarcation."
+          },
+          {
+            "name": "safe_protected_decode",
+            "type": "state_invariant",
+            "description": "JSON decoding must occur within a protected execution boundary, logging failures loudly while keeping the read loop active."
+          },
+          {
+            "name": "unidirectional_boundary",
+            "type": "state_invariant",
+            "description": "Processed payloads must be dispatched through callback delegates, keeping the network layer completely decoupled from UI rendering."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Loud Error Check",
+            "description": "Check if err is present. If a socket error occurred, fail loudly, log with rich diagnostic context, and trigger resource teardown.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Null/EOF Check",
+            "description": "Check if data is nil or empty, signaling connection closure or EOF. Exit early and execute a clean stream shutdown to prevent file descriptor leaks.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Chunk Accumulation",
+            "description": "Append raw incoming socket data bytes to a persistent, per-connection string accumulator buffer.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Newline Segment Parsing",
+            "description": "Search the accumulator for a newline ('\\n') character. While a newline is found, extract the frame preceding the newline and update the accumulator with the remaining trailing residue.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 5,
+            "name": "Protected JSON-RPC Decoding",
+            "description": "Perform JSON decoding inside a protected call (pcall) for each parsed frame. If parsing fails, log the malformed frame loudly with rich context and continue processing instead of crashing.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 6,
+            "name": "UI Event Dispatch",
+            "description": "Dispatch the successfully parsed JSON-RPC message object to UI handlers (e.g., nvim_client_ui_on_collapsed_block) using pure callback interfaces.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "TDD on_read: Write Busted unit tests in tests/test_nvim_client_network_on_read.lua to verify chunk accumulator handles split packets, multiple packets in one chunk, and invalid JSON gracefully (Guideline 12)",
+          "completed": true
+        },
+        {
+          "task": "Stateful chunk accumulator: Design a robust per-connection string accumulator to handle partial network packet reads (Guideline 13)",
+          "completed": true
+        },
+        {
+          "task": "Newline splitter: Parse and split the accumulator strictly on newline ('\\n') characters, maintaining left-over fragments (Guideline 2)",
+          "completed": true
+        },
+        {
+          "task": "Safe JSON decode & dispatch: Decode extracted frames inside protected blocks, dispatching valid objects to UI listeners while failing loudly on syntax errors (Guidelines 1, 5)",
+          "completed": true
+        }
+      ]
+    }
+  },
+  "usage_trees": {
+    "session_concurrency_flow": {
+      "node_id": "connect_to_socket",
+      "caller_id": "nvim_client_network_connect",
+      "component_id": "uds_server_handle_connection",
+      "description": "Client opens dedicated pipe socket connecting to UDS Daemon.",
+      "expected_inputs": {
+        "type": "object",
+        "properties": {
+          "reader": {
+            "type": "object",
+            "title": "any"
+          },
+          "writer": {
+            "type": "object",
+            "title": "any"
+          }
+        },
+        "required": [
+          "reader",
+          "writer"
+        ]
+      },
+      "expected_outputs": {
+        "type": "object",
+        "properties": {
+          "pipe": {
+            "type": "object",
+            "title": "any"
+          }
+        },
+        "required": [
+          "pipe"
+        ],
+        "title": "void"
+      },
+      "expected_side_effects": [
+        {
+          "target": "network",
+          "description": "Monitors socket read streams and handles resource cleanup on client socket disconnect"
+        }
+      ],
+      "dependencies": [
+        {
+          "node_id": "dispatch_start_session",
+          "caller_id": "uds_server_handle_connection",
+          "component_id": "uds_server_dispatch_request",
+          "description": "Daemon connection coroutine dispatches the incoming startup payload to the request router.",
+          "expected_inputs": {
+            "type": "object",
+            "properties": {
+              "payload": {
+                "type": "string"
+              },
+              "writer": {
+                "type": "object",
+                "title": "any"
+              }
+            },
+            "required": [
+              "payload",
+              "writer"
+            ]
+          },
+          "expected_outputs": {
+            "type": "object",
+            "title": "void"
+          },
+          "expected_side_effects": [],
+          "dependencies": [
+            {
+              "node_id": "router_resolves_session",
+              "caller_id": "uds_server_dispatch_request",
+              "component_id": "session_manager_load_session",
+              "description": "Dispatcher loads or resumes the stateful session record from disk.",
+              "expected_inputs": {
+                "type": "object",
+                "properties": {
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "checkpoint_name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "session_id"
+                ]
+              },
+              "expected_outputs": {
+                "type": "object",
+                "properties": {
+                  "session": {
+                    "type": "object",
+                    "title": "AgentSession"
+                  }
+                },
+                "required": [
+                  "session"
+                ]
+              },
+              "expected_side_effects": [
+                {
+                  "target": "fs",
+                  "description": "Reads session file from disk"
+                }
+              ],
+              "dependencies": [
+                {
+                  "node_id": "user_submits_prompt",
+                  "caller_id": "nvim_client_network_send_prompt",
+                  "component_id": "mock_agent_executor_run",
+                  "description": "Keystroke submission transmits prompt text and triggers the Mock Agent Executor.",
+                  "expected_inputs": {
+                    "type": "object",
+                    "properties": {
+                      "session": {
+                        "type": "object",
+                        "title": "AgentSession"
+                      },
+                      "prompt": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "session",
+                      "prompt"
+                    ]
+                  },
+                  "expected_outputs": {
+                    "type": "object",
+                    "title": "void"
+                  },
+                  "expected_side_effects": [
+                    {
+                      "target": "bus",
+                      "description": "Publishes events like telemetry:thought and telemetry:activity"
+                    },
+                    {
+                      "target": "fs",
+                      "description": "Calls save_session on completion"
+                    }
+                  ],
+                  "dependencies": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "node_id": "session_cleanup",
+          "caller_id": "uds_server_handle_connection",
+          "component_id": "uds_server_cleanup_session",
+          "description": "Cleans up session context and dictionary registration on socket EOF or client disconnect.",
+          "expected_inputs": {
+            "type": "object",
+            "properties": {
+              "session_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "session_id"
+            ]
+          },
+          "expected_outputs": {
+            "type": "object",
+            "title": "void"
+          },
+          "expected_side_effects": [
+            {
+              "target": "network",
+              "description": "Cancels associated streaming tasks and closes writer"
+            },
+            {
+              "target": "fs",
+              "description": "Optionally flushes session states"
+            }
+          ],
+          "dependencies": []
+        }
+      ]
+    },
+    "telemetry_streaming_flow": {
+      "node_id": "publish_thought_event",
+      "caller_id": "mock_agent_executor_run",
+      "component_id": "message_bus_publish",
+      "description": "Mock executor publishes state/thought events to the event bus.",
+      "expected_inputs": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "object",
+            "title": "dict"
+          }
+        },
+        "required": [
+          "event"
+        ]
+      },
+      "expected_outputs": {
+        "type": "object",
+        "title": "void"
+      },
+      "expected_side_effects": [],
+      "dependencies": [
+        {
+          "node_id": "stream_telemetry_to_socket",
+          "caller_id": "uds_server_stream_session_telemetry",
+          "component_id": "json_rpc_codec_encode_notification",
+          "description": "Telemetry stream task intercepts event, calls codec to encode a JSON-RPC 2.0 streaming notification frame.",
+          "expected_inputs": {
+            "type": "object",
+            "properties": {
+              "method": {
+                "type": "string"
+              },
+              "params": {
+                "type": "object",
+                "title": "any"
+              }
+            },
+            "required": [
+              "method",
+              "params"
+            ]
+          },
+          "expected_outputs": {
+            "type": "object",
+            "properties": {
+              "payload": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "payload"
+            ]
+          },
+          "expected_side_effects": [],
+          "dependencies": [
+            {
+              "node_id": "client_receives_telemetry",
+              "caller_id": "nvim_client_network_on_read",
+              "component_id": "nvim_client_ui_on_collapsed_block",
+              "description": "Client network loop reads socket frame, parses JSON-RPC notification, and triggers the UI on_collapsed_block render callback.",
+              "expected_inputs": {
+                "id": "str",
+                "type": "str",
+                "title": "str",
+                "full_content": "str"
+              },
+              "expected_outputs": {
+                "type": "object",
+                "title": "void"
+              },
+              "expected_side_effects": [
+                {
+                  "target": "ui",
+                  "description": "Mutates buffer to add collapsed virtual lines"
+                }
+              ],
+              "dependencies": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "component_types": {
+    "module": {
+      "allows_properties": false,
+      "allows_signature": false,
+      "allows_implementation_spec": true,
+      "is_executable_caller": true,
+      "allowed_parent_types": [
+        "module"
+      ]
+    },
+    "class": {
+      "allows_properties": true,
+      "allows_signature": false,
+      "allows_implementation_spec": false,
+      "is_executable_caller": false,
+      "allowed_parent_types": [
+        "module"
+      ]
+    },
+    "interface": {
+      "allows_properties": false,
+      "allows_signature": false,
+      "allows_implementation_spec": false,
+      "is_executable_caller": false,
+      "allowed_parent_types": [
+        "module"
+      ]
+    },
+    "function": {
+      "allows_properties": false,
+      "allows_signature": true,
+      "allows_implementation_spec": true,
+      "is_executable_caller": true,
+      "allowed_parent_types": [
+        "module",
+        "class"
+      ]
+    },
+    "operation": {
+      "allows_properties": false,
+      "allows_signature": true,
+      "allows_implementation_spec": true,
+      "is_executable_caller": true,
+      "allowed_parent_types": [
+        "interface",
+        "module"
+      ]
+    },
+    "data_object": {
+      "allows_properties": true,
+      "allows_signature": false,
+      "allows_implementation_spec": false,
+      "is_executable_caller": false,
+      "allowed_parent_types": [
+        "module",
+        "class"
+      ]
+    },
+    "enum": {
+      "allows_properties": true,
+      "allows_signature": false,
+      "allows_implementation_spec": false,
+      "is_executable_caller": false,
+      "allowed_parent_types": [
+        "module",
+        "class"
+      ]
+    },
+    "actor": {
+      "allows_properties": false,
+      "allows_signature": false,
+      "allows_implementation_spec": false,
+      "is_executable_caller": true,
+      "allowed_parent_types": []
+    },
+    "system_trigger": {
+      "allows_properties": false,
+      "allows_signature": false,
+      "allows_implementation_spec": false,
+      "is_executable_caller": true,
+      "allowed_parent_types": []
+    }
+  },
+  "validation_tools": {}
+}

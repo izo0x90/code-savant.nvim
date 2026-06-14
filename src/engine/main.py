@@ -34,7 +34,8 @@ from engine.constants import (
     CHECKPOINT_SEPARATOR,
     SCRATCH_DIR_NAME,
     TOOL_LOG_FILE_PREFIX,
-    TOOL_LOG_FILE_SUFFIX
+    TOOL_LOG_FILE_SUFFIX,
+    DEFAULT_SOCKET_PATH
 )
 
 
@@ -47,6 +48,10 @@ async def bootstrap_agent_cli() -> None:
     parser.add_argument("--steering-test", action="store_true", help="Simulate a mid-flight user steering injection event.")
     parser.add_argument("--requires-approval", action="store_true", help="Demonstrate pausable timer tracking during tool approval delays.")
     
+    # Server / daemon mode parameters
+    parser.add_argument("--server", action="store_true", help="Start the UDS JSON-RPC server.")
+    parser.add_argument("--socket-path", type=str, default=None, help="The Unix Domain Socket path to bind to.")
+    
     # Session Persistence & GenAI Client parameters
     parser.add_argument("--resume", "-r", type=str, nargs="?", const="latest", default=None, help="Resume previous session (latest, by index, or UUID).")
     parser.add_argument("--list-sessions", action="store_true", help="List available sessions for this project and exit.")
@@ -55,6 +60,21 @@ async def bootstrap_agent_cli() -> None:
     parser.add_argument("--no-mock", dest="mock", action="store_false", help="Disable mock simulation and make live API calls.")
 
     args = parser.parse_args()
+    
+    if args.server:
+        from engine.uds_server import UdsServer
+        socket_path = args.socket_path or DEFAULT_SOCKET_PATH
+        server = UdsServer(socket_path=socket_path)
+        print(f"Starting UDS Server on {socket_path}...")
+        await server.start()
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await server.stop()
+        return
     
     # Establish workspace directory context
     workspace = Path(os.getcwd()).resolve()
@@ -251,5 +271,9 @@ async def bootstrap_agent_cli() -> None:
     print("=" * 60)
 
 
-if __name__ == "__main__":
+def main():
     asyncio.run(bootstrap_agent_cli())
+
+
+if __name__ == "__main__":
+    main()

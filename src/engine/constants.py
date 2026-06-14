@@ -29,3 +29,4 @@ STATUS_STOP: str = "stop"
 # Default fallback configurations
 DEFAULT_PLATFORM: str = "mac"
 DEFAULT_MODEL_NAME: str = "gemini-2.5-pro"
+DEFAULT_SOCKET_PATH: str = "/tmp/code_savant.sock"

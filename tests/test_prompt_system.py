@@ -1,7 +1,7 @@
 import asyncio
 import os
 import shutil
-
+import pytest
 from pathlib import Path
 from engine.prompts.loader import PromptTemplateLoader
 from engine.skills import SkillManager
@@ -50,8 +50,8 @@ maxTimeSeconds: 30
 
     try:
         # Initialize loaders and discovery managers
-        templates_dir = Path("engine/prompts/templates")
-        system_agents_dir = Path("engine/prompts/agents")
+        templates_dir = Path("src/engine/prompts/templates")
+        system_agents_dir = Path("src/engine/prompts/agents")
         loader = PromptTemplateLoader(templates_dir=templates_dir)
         skill_manager = SkillManager(search_paths=[Path(temp_skills_dir)], skill_filenames=["SKILL.md"])
         agent_registry = AgentRegistry(
@@ -137,3 +137,8 @@ maxTimeSeconds: 30
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+@pytest.mark.asyncio
+async def test_prompt_system_all():
+    await main()

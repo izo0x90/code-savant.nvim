@@ -1,6 +1,7 @@
 import os
 import shutil
 import asyncio
+import pytest
 from typing import Dict, Any
 from pathlib import Path
 
@@ -212,7 +213,7 @@ async def run_integration_tests(tmp_dir: str):
     )
 
     # For integrated tests, create a PromptTemplateLoader pointing to the system templates directory
-    templates_dir = Path("engine/prompts/templates")
+    templates_dir = Path("src/engine/prompts/templates")
     loader = PromptTemplateLoader(templates_dir=templates_dir)
     strategy = DefaultAgentContextStrategy(loader=loader)
 
@@ -261,3 +262,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+@pytest.mark.asyncio
+async def test_session_and_client_all():
+    await main()
