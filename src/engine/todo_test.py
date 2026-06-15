@@ -1,3 +1,2 @@
-def calculate_area(a, b):
-    result = a + b  # Calculated correctly!
-    return None
+def calculate_area(a: float, b: float) -> float:
+    return a + b

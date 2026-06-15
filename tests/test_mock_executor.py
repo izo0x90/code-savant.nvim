@@ -12,8 +12,9 @@ from engine.mock_executor import (
     MOCK_THOUGHT_PAYLOAD_ID,
     make_default_response_payload,
 )
+from typing import Any
 from engine.sessions import AgentSession
-from engine.types import ActivityType, EventType, SessionMetadataPayload
+from engine.types import ActivityType, EventEnvelope, EventType, SessionMetadataPayload
 
 
 @pytest.fixture
@@ -41,8 +42,8 @@ async def test_mock_executor_thinking_scenario(message_bus: MessageBus, agent_se
     """Verify that a think trigger keyword emits model start, thought log, and model end."""
     events: list[dict] = []
 
-    async def listener(event: dict) -> None:
-        events.append(event)
+    async def listener(event: EventEnvelope[Any]) -> None:
+        events.append(event.to_dict())
 
     message_bus.subscribe(EventType.ACTIVITY.value, listener)
     message_bus.subscribe(EventType.TELEMETRY_LOG.value, listener)
@@ -74,8 +75,8 @@ async def test_mock_executor_editing_scenario(message_bus: MessageBus, agent_ses
     """Verify that an edit trigger keyword emits model start, diff log, and model end."""
     events: list[dict] = []
 
-    async def listener(event: dict) -> None:
-        events.append(event)
+    async def listener(event: EventEnvelope[Any]) -> None:
+        events.append(event.to_dict())
 
     message_bus.subscribe(EventType.ACTIVITY.value, listener)
     message_bus.subscribe(EventType.TELEMETRY_LOG.value, listener)
@@ -106,8 +107,8 @@ async def test_mock_executor_error_scenario(message_bus: MessageBus, agent_sessi
     """Verify that an error trigger keyword emits error telemetry log, raises ValueError, and still emits model end."""
     events: list[dict] = []
 
-    async def listener(event: dict) -> None:
-        events.append(event)
+    async def listener(event: EventEnvelope[Any]) -> None:
+        events.append(event.to_dict())
 
     message_bus.subscribe(EventType.ACTIVITY.value, listener)
     message_bus.subscribe(EventType.TELEMETRY_LOG.value, listener)
@@ -140,8 +141,8 @@ async def test_mock_executor_default_scenario(message_bus: MessageBus, agent_ses
     """Verify that default prompt emits model start, custom message log, and model end."""
     events: list[dict] = []
 
-    async def listener(event: dict) -> None:
-        events.append(event)
+    async def listener(event: EventEnvelope[Any]) -> None:
+        events.append(event.to_dict())
 
     message_bus.subscribe(EventType.ACTIVITY.value, listener)
     message_bus.subscribe(EventType.TELEMETRY_LOG.value, listener)

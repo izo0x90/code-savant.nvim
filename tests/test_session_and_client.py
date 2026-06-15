@@ -89,6 +89,66 @@ async def run_session_tests(tmp_dir: str):
     assert sessions_post_delete[0].session_id == session_id_2
     print("✅ Successfully deleted session.")
 
+    # 6. Test playback, loud parse failures, and sidecar metadata merging
+    print("\n--- [1b] Testing Sequential Playback and Loud Failures ---")
+    
+    # 6a. Playback with State Modifiers
+    playback_sess_id = "playback-test-session"
+    playback_file = Path(tmp_dir) / f"{playback_sess_id}{SESSION_FILE_SUFFIX}"
+    playback_meta_file = Path(tmp_dir) / f"{playback_sess_id}{SESSION_META_SUFFIX}"
+    
+    import json
+    lines = [
+        json.dumps({"role": "user", "parts": [{"text": "First message"}]}),
+        json.dumps({"role": "model", "parts": [{"text": "Second message"}]}),
+        json.dumps({"type": "SetDelta", "index": 1, "message": {"role": "model", "parts": [{"text": "Updated second message"}]}}),
+        json.dumps({"type": "RewindDelta", "count": 1})
+    ]
+    with open(playback_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+        
+    meta_data = {
+        "session_id": playback_sess_id,
+        "metadata": {
+            "name": "Sidecar Session Name That Is Way Too Long To Be Auto Saved In Under Sixty Four Characters Constraint",
+            "query": "Sidecar Query",
+            "created_at": "2026-06-14T12:00:00Z",
+            "last_updated": "2026-06-14T13:00:00Z",
+            "turn_count": 5
+        },
+        "turn_count": 5
+    }
+    with open(playback_meta_file, "w", encoding="utf-8") as f:
+        f.write(json.dumps(meta_data))
+        
+    loaded_playback = await manager.load_session(playback_sess_id)
+    assert len(loaded_playback.chat_history) == 1
+    assert loaded_playback.chat_history[0].parts[0].text == "First message"
+    
+    # Verify sidecar merging and name trimming
+    assert len(loaded_playback.metadata.name) == 64
+    assert loaded_playback.metadata.name.startswith("Sidecar Session Name")
+    assert loaded_playback.metadata.query == "Sidecar Query"
+    print("✅ Successfully verified sequential playback modifiers and sidecar merging / trimming.")
+    
+    # 6b. Loud Parse Failure
+    corrupt_sess_id = "corrupt-test-session"
+    corrupt_file = Path(tmp_dir) / f"{corrupt_sess_id}{SESSION_FILE_SUFFIX}"
+    corrupt_lines = [
+        json.dumps({"role": "user", "parts": [{"text": "Valid message"}]}),
+        "{invalid-json-here}"
+    ]
+    with open(corrupt_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(corrupt_lines))
+        
+    with pytest.raises(ValueError) as exc_info:
+        await manager.load_session(corrupt_sess_id)
+        
+    err_msg = str(exc_info.value)
+    assert "Line 2" in err_msg
+    assert corrupt_sess_id in err_msg
+    print("✅ Successfully verified loud parse failures with line numbers and file path.")
+
 
 async def run_retention_tests(tmp_dir: str):
     print("\n--- [2/4] Running Retention Cleanup Tests ---")

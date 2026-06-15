@@ -17,11 +17,8 @@ from engine.agents import AgentRegistry
 from engine.subagents import AgentTool
 from engine.sessions import SessionManager, AgentSession
 from engine.client import LiveGenAIClient, MockGenAIClient
-from engine.registry import ToolRegistry
 from engine.types import SessionMetadataPayload, ExecutorAgentConfig, ExecutionContext
 from engine.context import (
-    ContextSourceRepository,
-    DefaultPromptInputs,
     DefaultAgentContextStrategy,
     PromptTemplateLoader,
     SkillManager
@@ -179,7 +176,7 @@ async def bootstrap_agent_cli() -> None:
     prompt_strategy = DefaultAgentContextStrategy()
 
     # Instantiate discovery managers at the bootstrapper boundary
-    loader = PromptTemplateLoader(templates_dir=templates_dir)
+    _loader = PromptTemplateLoader(templates_dir=templates_dir)
     skill_manager = SkillManager(search_paths=[workspace], skill_filenames=["SKILL.md"])
     agent_registry = AgentRegistry(
         search_paths=[workspace],

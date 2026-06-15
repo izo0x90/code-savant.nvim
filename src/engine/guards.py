@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from pathlib import Path
+from engine.constants import DEFAULT_REQUEST_TIMEOUT
 
 from engine.tools import BaseTool
 from engine.types import ExecutionContext
@@ -92,7 +93,7 @@ class UserConfirmationGuard(ToolExecutionGuard):
                 },
                 "correlationId": self.call_id
             }
-            response = await context.message_bus.request(confirm_payload, "tool-confirmation-response")
+            response = await context.message_bus.request(confirm_payload, "tool-confirmation-response", DEFAULT_REQUEST_TIMEOUT)
             self.timer.resume()
 
             if not response.get("confirmed", False):

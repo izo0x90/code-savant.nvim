@@ -13,7 +13,6 @@ from typing import Any, Dict, Optional
 from engine.bus import MessageBus
 from engine.constants import (
     CHECKPOINT_SEPARATOR,
-    DEFAULT_SOCKET_PATH,
     SCRATCH_DIR_NAME,
     SESSION_FILE_SUFFIX,
     SESSION_META_SUFFIX,
@@ -278,7 +277,7 @@ class UdsServer:
         await session_manager.ensure_storage_dir()
 
         # Instantiate new session
-        session_id = f"{agent_profile}_{uuid.uuid4().hex[:8]}"
+        session_id = f"{agent_profile}_{uuid.uuid7()}"
         session = AgentSession(
             session_id=session_id,
             chat_history=[],
@@ -397,21 +396,23 @@ class UdsServer:
 
     async def stream_session_telemetry(self, session_id: str, writer: asyncio.StreamWriter, bus: MessageBus) -> None:
         """Long-running async task that translates internal bus EventEnvelopes to outgoing JSON-RPC notification frames."""
-        queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        queue: asyncio.Queue[EventEnvelope[Any]] = asyncio.Queue()
 
-        async def listener(event_dict: Dict[str, Any]) -> None:
-            await queue.put(event_dict)
+        async def listener(envelope: EventEnvelope[Any]) -> None:
+            await queue.put(envelope)
 
         bus.subscribe(EventType.TELEMETRY_LOG, listener)
         bus.subscribe(EventType.ACTIVITY, listener)
 
         try:
             while True:
-                event = await queue.get()
-                event_type = event.get("type")
+                envelope = await queue.get()
+                event_type = envelope.event_type
 
                 if event_type == EventType.TELEMETRY_LOG:
-                    payload = event.get("payload", {})
+                    payload = envelope.payload if isinstance(envelope.payload, dict) else (envelope.payload.to_dict() if hasattr(envelope.payload, "to_dict") else envelope.payload)
+                    if not isinstance(payload, dict):
+                        payload = {}
                     p_type = payload.get("type", "thought")
 
                     if p_type in ("thought", "diff", "tool"):
@@ -437,7 +438,9 @@ class UdsServer:
                     await writer.drain()
 
                 elif event_type == EventType.ACTIVITY:
-                    payload = event.get("payload", {})
+                    payload = envelope.payload if isinstance(envelope.payload, dict) else (envelope.payload.to_dict() if hasattr(envelope.payload, "to_dict") else envelope.payload)
+                    if not isinstance(payload, dict):
+                        payload = {}
                     act_type = payload.get("type")
                     status_str = "idle"
 

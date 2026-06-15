@@ -18,9 +18,6 @@ SCRATCH_DIR_NAME: str = "scratch"
 TOOL_LOG_FILE_PREFIX: str = "tool_"
 TOOL_LOG_FILE_SUFFIX: str = ".log"
 
-# Message roles matching the model API
-ROLE_USER: str = "user"
-ROLE_MODEL: str = "model"
 
 # Orchestrator status states
 STATUS_CONTINUE: str = "continue"
@@ -30,3 +27,25 @@ STATUS_STOP: str = "stop"
 DEFAULT_PLATFORM: str = "mac"
 DEFAULT_MODEL_NAME: str = "gemini-2.5-pro"
 DEFAULT_SOCKET_PATH: str = "/tmp/code_savant.sock"
+
+DEFAULT_SESSION_NAME: str = "Untitled Session"
+MAX_AUTO_NAME_LENGTH: int = 64
+
+# Protocol Event Types and Constants
+EVENT_TOOL_CONFIRMATION_REQUEST: str = "tool-confirmation-request"
+
+# Playback Delta Modifier Names
+DELTA_TYPE_SET: str = "SetDelta"
+DELTA_TYPE_REWIND: str = "RewindDelta"
+KEY_SET_DELTA: str = "set_delta"
+KEY_REWIND_DELTA: str = "rewind_delta"
+
+# Playback Schema Keys
+KEY_DELTA_INDEX: str = "index"
+KEY_DELTA_MESSAGE: str = "message"
+KEY_DELTA_METADATA: str = "metadata"
+KEY_DELTA_COUNT: str = "count"
+KEY_DELTA_TRUNCATE_TO: str = "truncate_to"
+
+# Default request timeout
+DEFAULT_REQUEST_TIMEOUT: float = 60.0

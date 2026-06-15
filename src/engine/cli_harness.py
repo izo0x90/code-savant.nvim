@@ -2,7 +2,7 @@ import os
 import sys
 import asyncio
 import argparse
-from typing import Any, Dict
+from typing import Any
 from engine.executor import LocalAgentExecutor
 from engine.tools import (
     CompleteTaskTool,
@@ -15,7 +15,7 @@ from engine.tools import (
 )
 from engine.agents import AgentRegistry
 from engine.subagents import AgentTool
-from engine.types import ExecutorAgentConfig, ExecutionContext, SessionMetadataPayload
+from engine.types import ExecutorAgentConfig, ExecutionContext, SessionMetadataPayload, EventEnvelope
 from engine.sessions import AgentSession, SessionManager
 from engine.client import MockGenAIClient
 from engine.bus import MessageBus
@@ -54,8 +54,9 @@ def format_sender(sender: str) -> str:
         children = "/".join(parts[1:])
         return f"{C_BOLD}[{parent}/{C_SUBAGENT}{children}{C_RESET}{C_BOLD}]{C_RESET}"
 
-async def handle_telemetry_activity(msg: Dict[str, Any]) -> None:
+async def handle_telemetry_activity(envelope: EventEnvelope[Any]) -> None:
     """Callback for rendering telemetry activities in a high-fidelity visual format."""
+    msg = envelope.to_dict()
     sender = msg.get("sender", "unknown")
     sender_prefix = format_sender(sender)
     activity_type = msg.get("activity_type")
@@ -114,8 +115,9 @@ async def handle_telemetry_activity(msg: Dict[str, Any]) -> None:
     elif activity_type == "ERROR":
         print(f"{sender_prefix} {C_ERROR}💥 Error:{C_RESET} {msg.get('msg')}")
 
-async def handle_telemetry_thought(msg: Dict[str, Any]) -> None:
+async def handle_telemetry_thought(envelope: EventEnvelope[Any]) -> None:
     """Callback for rendering real-time reasoning thought-stream chunks."""
+    msg = envelope.to_dict()
     sender = msg.get("sender", "unknown")
     sender_prefix = format_sender(sender)
     text = msg.get("text", "")
@@ -123,7 +125,8 @@ async def handle_telemetry_thought(msg: Dict[str, Any]) -> None:
 
 def make_confirmation_handler(bus):
     """Factory to create confirmation request handlers mapped back to the active message bus."""
-    async def handler(msg: Dict[str, Any]) -> None:
+    async def handler(envelope: EventEnvelope[Any]) -> None:
+        msg = envelope.to_dict()
         sender = msg.get("sender", "unknown")
         subagent = msg.get("subagent")
         display_sender = f"{sender}/{subagent}" if subagent else sender

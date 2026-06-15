@@ -1,14 +1,15 @@
-from __future__ import annotations
 """
 Lightweight data transport classes utilizing slots=True and frozen=True for speed, memory efficiency, and runtime immutability.
 Used strictly for internal communication; Pydantic or dicts are used at serialization boundaries.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, List, Optional, Dict, Generic, TypeVar, Union, Protocol, AsyncIterator
 import time
+import uuid
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, AliasChoices
 
 T = TypeVar("T")
@@ -45,9 +46,9 @@ class FunctionDeclarationSpec(BaseModel):
 
 
 class MessageRole(str, Enum):
-    ROLE_USER = "user"
-    ROLE_MODEL = "model"
-    ROLE_SYSTEM = "system"
+    USER = "user"
+    MODEL = "model"
+    SYSTEM = "system"
 
 
 class LoopStatus(str, Enum):
@@ -141,7 +142,38 @@ class FunctionResponsePart(BaseModel):
     name: str
     response: JsonValue
 
-MessagePart = Union[TextPart, FunctionCallPart, FunctionResponsePart]
+class ToolCallPart(BaseModel):
+    """
+    Immutable representation of an LLM tool invocation request.
+    Strictly type-restricted to enforce purely serializable JSON values.
+    """
+    model_config = ConfigDict(frozen=True, slots=True)
+    name: str
+    args: Dict[str, JsonValue]
+    id: str
+
+class ToolResultPart(BaseModel):
+    """
+    Immutable representation of a tool execution outcome returned to the LLM.
+    Guarantees zero leakage of non-serializable runtime handles.
+    """
+    model_config = ConfigDict(frozen=True, slots=True)
+    name: str
+    response: JsonValue
+    id: Optional[str] = None
+
+MessagePart = Union[TextPart, FunctionCallPart, FunctionResponsePart, ToolCallPart, ToolResultPart]
+
+class SessionLogRecord(BaseModel):
+    """
+    Immutable representation of a structured log record for a session event.
+    """
+    model_config = ConfigDict(frozen=True, slots=True)
+    session_id: str
+    timestamp: float = Field(default_factory=time.time)
+    event: str
+    message: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ==============================================================================
@@ -154,8 +186,11 @@ class ChatMessage(BaseModel):
     Eliminates broad, loose dictionaries inside core orchestrator logic.
     """
     model_config = ConfigDict(frozen=True, slots=True)
+    id: str = Field(default_factory=lambda: str(uuid.uuid7()))
+    timestamp: float = Field(default_factory=time.time)
     role: str
     parts: List[MessagePart]
+    metadata: Optional[Dict[str, Any]] = Field(default=None)
 
 @dataclass(slots=True, frozen=True)
 class ModelRequestContext:

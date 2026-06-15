@@ -116,8 +116,8 @@
       "parent_id": "session_manager",
       "implements_id": null,
       "description": "Asynchronously serializes and persists a session and its companion meta sidecar to disk.",
-      "status": "existing",
-      "stage": "declared",
+      "status": "modifying",
+      "stage": "implemented",
       "location": null,
       "properties": null,
       "inputs": {
@@ -142,8 +142,59 @@
           "description": "Writes session json and metadata sidecar files to disk"
         }
       ],
-      "implementation_spec": null,
-      "modification_tasks": []
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "safe_directory_creation",
+            "type": "pre_condition",
+            "description": "Ensure parent directories exist cleanly by invoking mkdir(parents=True, exist_ok=True) to guarantee idempotency."
+          },
+          {
+            "name": "deterministic_lifecycle",
+            "type": "state_invariant",
+            "description": "All read and write streams must be enclosed in with-statement context blocks to guarantee file descriptor cleanup."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Compute turn metrics",
+            "description": "Calculate turn count and ISO-formatted dates dynamically using system times, without hardcoded offsets or magic numbers.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Write Sidecar metadata",
+            "description": "Serialize a separate JSON companion sidecar file tracking counts and metadata securely under context managers.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Write JSONL session stream",
+            "description": "Append or rewrite individual session logs line-by-line using sequentially structured JSONL playback formatting.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Compute session ISO timestamps and sidecar metadata.",
+          "completed": true
+        },
+        {
+          "task": "Write SessionMetaSidecar JSON payload to disk under with-context blocks.",
+          "completed": true
+        },
+        {
+          "task": "Surgically serialize chat history list to sequential JSONL stream on disk.",
+          "completed": true
+        }
+      ]
     },
     "session_manager_load_session": {
       "id": "session_manager_load_session",
@@ -152,8 +203,8 @@
       "parent_id": "session_manager",
       "implements_id": null,
       "description": "Asynchronously loads and parses a session file from disk by ID.",
-      "status": "existing",
-      "stage": "declared",
+      "status": "modifying",
+      "stage": "implemented",
       "location": null,
       "properties": null,
       "inputs": {
@@ -195,8 +246,64 @@
           "description": "Reads session file from disk"
         }
       ],
-      "implementation_spec": null,
-      "modification_tasks": []
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "loud_parse_failures",
+            "type": "post_condition",
+            "description": "Throw explicit and descriptive ValueError exceptions capturing line number and file path on JSONL line decode or validation failure."
+          },
+          {
+            "name": "no_magic_literals",
+            "type": "state_invariant",
+            "description": "Trim, fallback, or read settings must rely strictly on centralized constants (like DEFAULT_SESSION_NAME and MAX_AUTO_NAME_LENGTH)."
+          },
+          {
+            "name": "safe_resource_read",
+            "type": "state_invariant",
+            "description": "Deterministic file-descriptor handling using context manager wrappers."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Read raw streams",
+            "description": "Read file lines asynchronously using safe thread delegation (asyncio.to_thread) and context-managed stream handles.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Line-by-line playback",
+            "description": "Iterate through individual lines, playing back state modifiers (ChatMessage, SetDelta, RewindDelta) chronologically with early guard clauses.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Reconstruct session",
+            "description": "Load the sidecar metadata to merge dates and reconstruct the fully validated AgentSession model.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Define centralized module constants for name lengths and fallbacks.",
+          "completed": true
+        },
+        {
+          "task": "Implement sequential play back parser in load_session with early guard clauses and loud parse failure exceptions.",
+          "completed": true
+        },
+        {
+          "task": "Read and merge companion meta sidecars cleanly during state playback.",
+          "completed": true
+        }
+      ]
     },
     "bus": {
       "id": "bus",
@@ -206,14 +313,49 @@
       "implements_id": null,
       "description": "Asynchronous Event Pub/Sub Message Bus core module",
       "status": "existing",
-      "stage": "declared",
+      "stage": "implemented",
       "location": null,
       "properties": null,
       "inputs": null,
       "outputs": null,
       "side_effects": [],
-      "implementation_spec": null,
-      "modification_tasks": []
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "ui_decoupled",
+            "type": "state_invariant",
+            "description": "The bus module must contain zero console print statements except stderr for subscriber exceptions."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Establish Module Namespace",
+            "description": "Establish the engine/bus module with the core asyncio and typing imports.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Declare Async Type Definitions",
+            "description": "Define explicit typing for AsyncListener and establish EventEnvelope/EventType integration.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Establish module namespace `src/engine/bus.py` with required typing declarations (e.g. AsyncListener) and EventEnvelope integration.",
+          "completed": true
+        },
+        {
+          "task": "Integrate module into the system's package structure and ensure correct imports from engine.types.",
+          "completed": true
+        }
+      ]
     },
     "message_bus": {
       "id": "message_bus",
@@ -223,14 +365,27 @@
       "implements_id": null,
       "description": "An asynchronous, thread-safe pub/sub router used to distribute execution telemetry and confirmation requests.",
       "status": "existing",
-      "stage": "declared",
+      "stage": "implemented",
       "location": null,
       "properties": null,
       "inputs": null,
       "outputs": null,
       "side_effects": [],
       "implementation_spec": null,
-      "modification_tasks": []
+      "modification_tasks": [
+        {
+          "task": "Implement `MessageBus` class `__init__` defining fields for listeners and future tracking.",
+          "completed": true
+        },
+        {
+          "task": "Implement `derive` method for creating hierarchical subagent message buses with name prefixes.",
+          "completed": true
+        },
+        {
+          "task": "Implement `request` method using a correlated asyncio Future and uuid4 to coordinate requests and responses within a specified timeout.",
+          "completed": true
+        }
+      ]
     },
     "message_bus_subscribe": {
       "id": "message_bus_subscribe",
@@ -240,7 +395,7 @@
       "implements_id": null,
       "description": "Attaches a listener coroutine to observe specific event topics.",
       "status": "existing",
-      "stage": "declared",
+      "stage": "implemented",
       "location": null,
       "properties": null,
       "inputs": {
@@ -271,8 +426,50 @@
         ]
       },
       "side_effects": [],
-      "implementation_spec": null,
-      "modification_tasks": []
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "valid_callback_type",
+            "type": "pre_condition",
+            "description": "The callback must be a callable asynchronous coroutine listener function."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Validate Input Parameters",
+            "description": "Ensure event_type is a string and callback is a callable AsyncListener coroutine.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Initialize Topic Listeners List",
+            "description": "If the specified event_type is not present in self.listeners, initialize it with an empty list.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Append Subscriber",
+            "description": "Append the callback (listener) to the listeners list associated with event_type.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Implement `subscribe` method that accepts `event_type` and `listener` callback.",
+          "completed": true
+        },
+        {
+          "task": "Store listener in local `self.listeners` dictionary mapped by `event_type`.",
+          "completed": true
+        }
+      ]
     },
     "message_bus_publish": {
       "id": "message_bus_publish",
@@ -282,7 +479,7 @@
       "implements_id": null,
       "description": "Broadcasts an event envelope to all active topic subscribers.",
       "status": "existing",
-      "stage": "declared",
+      "stage": "implemented",
       "location": null,
       "properties": null,
       "inputs": {
@@ -302,8 +499,73 @@
         "title": "void"
       },
       "side_effects": [],
-      "implementation_spec": null,
-      "modification_tasks": []
+      "implementation_spec": {
+        "pattern_or_system": null,
+        "invariants": [
+          {
+            "name": "no_silent_subscriber_failures",
+            "type": "state_invariant",
+            "description": "Any exceptions thrown inside subscriber callbacks must be caught, and their details with tracebacks written to stderr, preventing silent failures and swallowing inside asyncio.gather."
+          },
+          {
+            "name": "correlation_id_resolution",
+            "type": "post_condition",
+            "description": "If a correlationId exists, any matching pending request future in the registry must be completed with the incoming event payload."
+          }
+        ],
+        "logic_steps": [
+          {
+            "sequence": 1,
+            "name": "Normalize Event Envelope",
+            "description": "Normalize incoming EventEnvelope to a raw dict and set a default sender if not already present.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 2,
+            "name": "Extract Event Type",
+            "description": "Extract the event 'type'. If it is missing or empty, exit early without further actions.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 3,
+            "name": "Resolve Correlated Requests",
+            "description": "Check if 'correlationId' exists in the message and matches a registered future in self._pending_futures. If found, resolve the future with the message payload.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 4,
+            "name": "Collect Active Listeners",
+            "description": "Retrieve the list of registered listeners for the event type and assemble async tasks to run them concurrently, wrapping invocation setup in protective try-except blocks.",
+            "algorithm": null,
+            "complexity": null
+          },
+          {
+            "sequence": 5,
+            "name": "Concurrently Execute and Log Failures",
+            "description": "Execute collected listener tasks concurrently using asyncio.gather(return_exceptions=True). Check results for returned exceptions and log detailed tracebacks to sys.stderr to avoid silent failures.",
+            "algorithm": null,
+            "complexity": null
+          }
+        ],
+        "validation": []
+      },
+      "modification_tasks": [
+        {
+          "task": "Normalize incoming EventEnvelope to raw dict and inject default sender information.",
+          "completed": true
+        },
+        {
+          "task": "Check for correlationId and resolve matching pending asyncio Future if found.",
+          "completed": true
+        },
+        {
+          "task": "Concurrently execute listener callbacks with `asyncio.gather(..., return_exceptions=True)` and capture subscriber-level exceptions to stderr cleanly.",
+          "completed": true
+        }
+      ]
     },
     "uds_server_module": {
       "id": "uds_server_module",
@@ -2468,15 +2730,61 @@
       "parent_id": null,
       "implements_id": null,
       "description": "Structure representing a single chat message in history",
-      "status": "existing",
+      "status": "modifying",
       "stage": "implemented",
       "location": null,
-      "properties": null,
+      "properties": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "number"
+          },
+          "role": {
+            "type": "string"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "any"
+            }
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "type": "object",
+                "title": "any"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "timestamp",
+          "role",
+          "parts"
+        ]
+      },
       "inputs": null,
       "outputs": null,
       "side_effects": [],
       "implementation_spec": null,
-      "modification_tasks": []
+      "modification_tasks": [
+        {
+          "task": "Define ChatRole typed enumeration and modern MessagePart schemas.",
+          "completed": true
+        },
+        {
+          "task": "Update ChatMessage class defaults using native Python 3.14 uuid.uuid7().",
+          "completed": true
+        }
+      ]
     },
     "SessionMetadataPayload": {
       "id": "SessionMetadataPayload",

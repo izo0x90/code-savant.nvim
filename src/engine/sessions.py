@@ -1,11 +1,26 @@
 import datetime
 import asyncio
+import uuid
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field
 
-from engine.constants import DEFAULT_RETENTION_DAYS
+from engine.constants import (
+    DEFAULT_RETENTION_DAYS,
+    DEFAULT_SESSION_NAME,
+    MAX_AUTO_NAME_LENGTH,
+    DELTA_TYPE_SET,
+    DELTA_TYPE_REWIND,
+    KEY_SET_DELTA,
+    KEY_REWIND_DELTA,
+    KEY_DELTA_INDEX,
+    KEY_DELTA_MESSAGE,
+    KEY_DELTA_METADATA,
+    KEY_DELTA_COUNT,
+    KEY_DELTA_TRUNCATE_TO,
+)
 from engine.types import ChatMessage, AgentSessionProtocol, SessionMetadataPayload, SessionMetaSidecar
+
 
 class SessionPayload(BaseModel):
     session_id: str
@@ -158,16 +173,13 @@ class SessionManager:
         )
         session._metadata = updated_metadata
 
-        payload = SessionPayload(
-            session_id=session.session_id,
-            metadata=session.metadata,
-            chat_history=session.chat_history
-        )
+        # Serialize ChatMessage objects line-by-line in JSONL format
+        lines = [msg.model_dump_json() for msg in session.chat_history]
+        payload_str = "\n".join(lines)
 
-        payload_str = payload.model_dump_json(indent=2)
         meta_payload = SessionMetaSidecar(
             session_id=session.session_id,
-            metadata=payload.metadata,
+            metadata=session.metadata,
             turn_count=len(session.chat_history)
         )
         meta_str = meta_payload.model_dump_json(indent=2)
@@ -186,7 +198,7 @@ class SessionManager:
         Creates a new isolated child session under the parent session's subdirectory.
         Prevents parent listing pollution while keeping sessions structurally associated.
         """
-        child_session_id = f"{agent_name}_{uuid.uuid4().hex[:8]}" if "uuid" in globals() else f"{agent_name}_{uuid_hex()}"
+        child_session_id = f"{agent_name}_{uuid.uuid7()}"
         
         # Return a pure domain AgentSession
         sub_session = AgentSession(
@@ -216,26 +228,168 @@ class SessionManager:
         await sub_manager.save_session(sub_session)
         return sub_session
 
+    def _apply_playback_line(
+        self,
+        data: Dict[str, Any],
+        chat_history: List[ChatMessage],
+        line_num: int,
+        filepath: Path
+    ) -> Optional[SessionMetadataPayload]:
+        """
+        Surgically applies a single log modifier or appends a raw ChatMessage.
+        Returns updated session metadata if found, otherwise None.
+        """
+        modifier_type = data.get("type")
+
+        if modifier_type == DELTA_TYPE_SET or KEY_SET_DELTA in data:
+            try:
+                if KEY_DELTA_INDEX in data and KEY_DELTA_MESSAGE in data:
+                    index_val = data[KEY_DELTA_INDEX]
+                    msg_data = data[KEY_DELTA_MESSAGE]
+                    msg = ChatMessage.model_validate(msg_data)
+                    if 0 <= index_val < len(chat_history):
+                        chat_history[index_val] = msg
+                    else:
+                        chat_history.append(msg)
+                elif KEY_DELTA_METADATA in data:
+                    meta_data = data[KEY_DELTA_METADATA]
+                    return SessionMetadataPayload.model_validate(meta_data)
+            except Exception as e:
+                raise ValueError(f"Line {line_num} in {filepath} has invalid SetDelta structure: {e}")
+        elif modifier_type == DELTA_TYPE_REWIND or KEY_REWIND_DELTA in data:
+            try:
+                if KEY_DELTA_COUNT in data:
+                    count_val = data[KEY_DELTA_COUNT]
+                    if isinstance(count_val, int) and count_val > 0:
+                        chat_history[:] = chat_history[:-count_val]
+                elif KEY_DELTA_TRUNCATE_TO in data:
+                    trunc_val = data[KEY_DELTA_TRUNCATE_TO]
+                    if isinstance(trunc_val, int) and 0 <= trunc_val <= len(chat_history):
+                        chat_history[:] = chat_history[:trunc_val]
+            except Exception as e:
+                raise ValueError(f"Line {line_num} in {filepath} has invalid RewindDelta structure: {e}")
+        else:
+            try:
+                # Clean up "type" key if it was injected or present
+                msg_data = dict(data)
+                msg_data.pop("type", None)
+                msg = ChatMessage.model_validate(msg_data)
+                chat_history.append(msg)
+            except Exception as e:
+                raise ValueError(f"Line {line_num} in {filepath} has invalid ChatMessage structure: {e}")
+        return None
+
     async def load_session(self, session_id: str, checkpoint_name: Optional[str] = None) -> AgentSession:
         """
-        Asynchronously loads and parses session files.
-        Leverages Pydantic v2's direct model_validate_json for fast validation.
+        Asynchronously loads and parses session files line-by-line using a sequential playback parser.
+        Supports both standard JSON (SessionPayload) and JSONL formats containing state modifiers.
+        Loads companion metadata sidecar to merge dates and reconstruct the fully validated session.
         """
         filepath = self._get_filepath(session_id, checkpoint_name)
-        
-        def _read():
+        meta_filepath = self.storage_dir / f"{session_id}{self.meta_suffix}"
+
+        def _read_files():
             if not filepath.exists():
                 raise FileNotFoundError(f"Session file not found: {filepath}")
             with open(filepath, "r", encoding="utf-8") as f:
-                return f.read()
+                content = f.read()
+            
+            meta_content = None
+            if meta_filepath.exists():
+                with open(meta_filepath, "r", encoding="utf-8") as f:
+                    meta_content = f.read()
+            return content, meta_content
 
-        content = await asyncio.to_thread(_read)
-        payload = SessionPayload.model_validate_json(content)
+        content, meta_content = await asyncio.to_thread(_read_files)
+
+        chat_history: List[ChatMessage] = []
+        metadata_from_payload: Optional[SessionMetadataPayload] = None
+        session_id_from_payload: Optional[str] = None
+
+        # Clean the input content to check if it represents a single standard JSON object
+        stripped_content = content.strip()
+        is_standard_json = False
+
+        if stripped_content.startswith("{") and stripped_content.endswith("}"):
+            try:
+                payload = SessionPayload.model_validate_json(stripped_content)
+                chat_history = list(payload.chat_history)
+                session_id_from_payload = payload.session_id
+                metadata_from_payload = payload.metadata
+                is_standard_json = True
+            except Exception:
+                # If it looks like standard JSON but fails to validate, we will fall back to JSONL
+                # parsing line-by-line to find the exact line causing the corrupt structure/validation error.
+                is_standard_json = False
+
+        if not is_standard_json:
+            import json
+            lines = content.splitlines()
+            for idx, line in enumerate(lines):
+                line_num = idx + 1
+                stripped_line = line.strip()
+                if not stripped_line:
+                    continue
+                
+                try:
+                    data = json.loads(stripped_line)
+                except Exception as e:
+                    raise ValueError(f"Line {line_num} in {filepath} is corrupt or invalid JSON: {e}")
+
+                if not isinstance(data, dict):
+                    raise ValueError(f"Line {line_num} in {filepath} is not a valid JSON object")
+
+                meta = self._apply_playback_line(data, chat_history, line_num, filepath)
+                if meta:
+                    metadata_from_payload = meta
+
+        # Reconstruct session metadata by merging dates and companion sidecar cleanly
+        name = None
+        query = None
+        created_at = None
+        last_updated = None
+        turn_count = len(chat_history)
+
+        if metadata_from_payload:
+            name = metadata_from_payload.name
+            query = metadata_from_payload.query
+            created_at = metadata_from_payload.created_at
+            last_updated = metadata_from_payload.last_updated
+            if metadata_from_payload.turn_count is not None:
+                turn_count = metadata_from_payload.turn_count
+
+        if meta_content:
+            try:
+                sidecar = SessionMetaSidecar.model_validate_json(meta_content)
+                sidecar_meta = sidecar.metadata
+                if sidecar_meta:
+                    name = sidecar_meta.name or name
+                    query = sidecar_meta.query or query
+                    created_at = sidecar_meta.created_at or created_at
+                    last_updated = sidecar_meta.last_updated or last_updated
+                    if sidecar_meta.turn_count is not None:
+                        turn_count = sidecar_meta.turn_count
+            except Exception as e:
+                raise ValueError(f"Companion sidecar metadata file {meta_filepath} is corrupt: {e}")
+
+        # Enforce name fallback and maximum auto name length limit using centralized constants
+        if not name:
+            name = DEFAULT_SESSION_NAME
+        elif len(name) > MAX_AUTO_NAME_LENGTH:
+            name = name[:MAX_AUTO_NAME_LENGTH]
+
+        merged_metadata = SessionMetadataPayload(
+            name=name,
+            query=query,
+            created_at=created_at,
+            last_updated=last_updated,
+            turn_count=turn_count
+        )
 
         return AgentSession(
-            session_id=payload.session_id,
-            chat_history=payload.chat_history,
-            metadata=payload.metadata
+            session_id=session_id_from_payload or session_id,
+            chat_history=chat_history,
+            metadata=merged_metadata
         )
 
     async def list_sessions(self) -> List[SessionMetaSidecar]:
@@ -305,21 +459,18 @@ class SessionManager:
         """
         Asynchronously writes truncated tool outputs to a structured, session-specific directory.
         """
-        log_filepath = self.storage_dir / session.session_id / self.scratch_dir_name / f"{self.tool_log_prefix}{tool_name}_{uuid_hex()}{self.tool_log_suffix}"
+        log_filepath = self.storage_dir / session.session_id / self.scratch_dir_name / f"{self.tool_log_prefix}{tool_name}_{uuid.uuid7()}{self.tool_log_suffix}"
         await asyncio.to_thread(_sync_write_truncation_log, log_filepath, content)
         return log_filepath
 
     async def save_checkpoint(self, session_id: str, checkpoint_name: str) -> None:
-        """Asynchronously creates a named checkpoint snapshot of the current session."""
+        """Asynchronously creates a named checkpoint snapshot of the current session in JSONL format."""
         session = await self.load_session(session_id)
         filepath = self._get_filepath(session_id, checkpoint_name)
 
-        payload = SessionPayload(
-            session_id=session.session_id,
-            metadata=session.metadata,
-            chat_history=session.chat_history
-        )
-        payload_str = payload.model_dump_json(indent=2)
+        # Write sequential JSONL lines for checkpoints
+        lines = [msg.model_dump_json() for msg in session.chat_history]
+        payload_str = "\n".join(lines)
         await asyncio.to_thread(_sync_write_checkpoint, filepath, payload_str)
 
     async def enforce_retention_policy(self, max_age_days: int = DEFAULT_RETENTION_DAYS, max_count: Optional[int] = None) -> None:
@@ -344,8 +495,3 @@ class SessionManager:
             for session in old_sessions:
                 await self.delete_session(session.session_id)
 
-
-def uuid_hex() -> str:
-    """Fallback simple uuid generator if uuid is not imported."""
-    import uuid
-    return uuid.uuid4().hex[:8]

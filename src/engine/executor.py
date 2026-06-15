@@ -4,9 +4,6 @@ Driven strictly by dynamic ExecutionContext passing and strategy pipelines.
 """
 
 from __future__ import annotations
-import asyncio
-import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, AsyncIterator, Union
 from engine.skills import SkillManager
 from engine.agents import AgentRegistry
@@ -14,8 +11,6 @@ from engine.agents import AgentRegistry
 from engine.bus import MessageBus
 from engine.timer import DeadlineTimer
 from engine.registry import ToolRegistry
-from engine.client import BaseGenAIClient
-from engine.sessions import SessionManager, AgentSession
 from engine.types import (
     ToolCall,
     ThoughtChunk,
@@ -37,10 +32,8 @@ from engine.constants import (
 )
 from engine.context import (
     ContextStrategy,
-    BasePromptInputs,
     DefaultPromptInputs,
     ContextSourceRepository,
-    DefaultAgentContextStrategy,
     template_string,
     ChatCompressionService,
     ToolOutputTruncationService
@@ -249,7 +242,7 @@ class LocalAgentExecutor:
             )
 
         model_msg = ChatMessage(
-            role=MessageRole.ROLE_MODEL.value,
+            role=MessageRole.MODEL.value,
             parts=[
                 FunctionCallPart(name=f.name, args=f.args, id=f.id)
                 for f in function_calls
@@ -278,7 +271,7 @@ class LocalAgentExecutor:
             fr = tr["functionResponse"]
             parts.append(FunctionResponsePart(name=fr["name"], response=fr["response"]))
 
-        user_msg = ChatMessage(role=MessageRole.ROLE_USER.value, parts=parts)
+        user_msg = ChatMessage(role=MessageRole.USER.value, parts=parts)
         
         # 2. Tool output truncation service executed post-scheduler dispatch
         truncator = ToolOutputTruncationService()
@@ -322,7 +315,7 @@ class LocalAgentExecutor:
         warning_prompt = self.context_strategy.compile_recovery_prompt(reason)
         
         # Append User warning to session history
-        user_warning = ChatMessage(role=MessageRole.ROLE_USER.value, parts=[TextPart(text=warning_prompt)])
+        user_warning = ChatMessage(role=MessageRole.USER.value, parts=[TextPart(text=warning_prompt)])
         await context.session.append_message(user_warning)
 
         # Setup isolated grace deadline timer from config
@@ -365,11 +358,11 @@ class LocalAgentExecutor:
         
         # Append initial query or continue instruction directly to stateful session
         if not context.session.chat_history:
-            await context.session.append_message(ChatMessage(role=MessageRole.ROLE_USER.value, parts=[TextPart(text=query_text)]))
+            await context.session.append_message(ChatMessage(role=MessageRole.USER.value, parts=[TextPart(text=query_text)]))
         else:
             last_msg = context.session.chat_history[-1]
-            if last_msg.role != MessageRole.ROLE_USER.value:
-                await context.session.append_message(ChatMessage(role=MessageRole.ROLE_USER.value, parts=[TextPart(text="Continue task execution.")]))
+            if last_msg.role != MessageRole.USER.value:
+                await context.session.append_message(ChatMessage(role=MessageRole.USER.value, parts=[TextPart(text="Continue task execution.")]))
         
         current_message = context.session.chat_history[-1]
 

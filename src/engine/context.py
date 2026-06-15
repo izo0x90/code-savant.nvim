@@ -3,7 +3,6 @@ Context assembly and prompt Strategy models.
 Replaces the legacy procedural prompt-builders with a clean, fully-typed dynamic strategy pipeline.
 """
 
-import os
 import uuid
 import json
 import asyncio
@@ -270,7 +269,7 @@ class ToolOutputTruncationService:
                     
                     scratch_dir = workspace_path / SCRATCH_DIR_NAME
                     # Generate unique log file
-                    f_name = f"{TOOL_LOG_FILE_PREFIX}{part.name}_{uuid.uuid4().hex[:8]}{TOOL_LOG_FILE_SUFFIX}"
+                    f_name = f"{TOOL_LOG_FILE_PREFIX}{part.name}_{uuid.uuid7()}{TOOL_LOG_FILE_SUFFIX}"
                     log_path = scratch_dir / f_name
                     
                     def _ensure_dir():
