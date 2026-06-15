@@ -138,7 +138,10 @@ class MessageBus:
             try:
                 event_type = EventType(event_type_str)
             except ValueError:
-                event_type = event_type_str
+                raise ValueError(
+                    f"Invalid event type: '{event_type_str}'. "
+                    f"Must be one of {[e.value for e in EventType]}"
+                )
 
             correlation_id = raw_dict.get("correlationId")
             payload = raw_dict.get("payload", raw_dict)

@@ -196,11 +196,11 @@ function UI:_expand_inplace_impl(opts)
     -- 6. Clean up old collapsed extmark
     pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, cached.extmark_id)
 
-    -- 7. Anchor new expanded tracking extmark at the top of the block with indicator
+    -- 7. Anchor new expanded tracking extmark at the top of the block with indicator above it as a virtual line
     local indicator = "▼ Thought: " .. cached.title
     local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, row, 0, {
-      virt_text = { { indicator, "Comment" } },
-      virt_text_pos = "right_align",
+      virt_lines = { { { indicator, "Comment" } } },
+      virt_lines_above = true,
     })
 
     -- 8. Update cache entry status and dimensions
@@ -404,15 +404,6 @@ function UI:run_programmatic_update(bufnr_or_callback, callback)
   end
 end
 
---- Backward-compatible dummy stubs to prevent legacy external scripts from breaking.
---- Under the dual-buffer architecture, these are completely safe no-ops.
-function UI:attach_bytes_listener(opts)
-  -- No-op: Dual-buffer natively manages read-only states without on_bytes.
-end
-function UI:set_prompt_threshold(bufnr, row)
-  -- No-op: Dual-buffer natively manages read-only states without thresholds.
-end
-
 --- Teardown the UI manager, cleaning up all registered extmarks.
 function UI:teardown()
   -- Clean up all cached extmarks
@@ -473,11 +464,6 @@ function UI.open_in_float(self, opts)
   else
     return self:_open_in_float_impl(opts)
   end
-end
-
-function UI.on_bytes_listener(opts)
-  local inst = UI.get_instance()
-  return inst:attach_bytes_listener(opts)
 end
 
 return UI

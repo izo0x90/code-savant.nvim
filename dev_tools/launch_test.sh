@@ -7,6 +7,26 @@ set -euo pipefail
 # Resolve absolute directory of repository root
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Parse optional arguments
+MOCK_ARG=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mock|-m)
+      MOCK_ARG="mock"
+      shift
+      ;;
+    --live|-l)
+      MOCK_ARG="live"
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Usage: $0 [--mock|-m] [--live|-l]"
+      exit 1
+      ;;
+  esac
+done
+
 # Launch Neovim
 exec nvim -c "set rtp+=${PROJECT_ROOT}" \
           -c "lua require('code_savant').setup({
@@ -16,4 +36,4 @@ exec nvim -c "set rtp+=${PROJECT_ROOT}" \
                   submit = '<CR>'
                 }
               })" \
-          -c "CodeSavantChat"
+          -c "CodeSavantChat ${MOCK_ARG}"

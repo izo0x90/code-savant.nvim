@@ -129,17 +129,31 @@ class MockGenAIClient(BaseGenAIClient):
         await asyncio.sleep(0.01)  # Simulated latency
 
         # ----------------------------------------------------------------------
+        # Resolve target file name dynamically from prompt/chat history
+        # ----------------------------------------------------------------------
+        target_file = "scratch_test.py"
+        for msg in chat_history:
+            if msg.role in ("user", "model", "system"):
+                for part in msg.parts:
+                    if isinstance(part, TextPart):
+                        for word in part.text.split():
+                            cleaned_word = word.strip(".,'\"`();")
+                            if cleaned_word.endswith(".py"):
+                                target_file = cleaned_word
+                                break
+
+        # ----------------------------------------------------------------------
         # Subagent "coder" simulated flow
         # ----------------------------------------------------------------------
         if "coder" in agent_name:
             if turn_counter == 0:
                 yield ThoughtChunk(text="Analyzing target compute files.")
                 await asyncio.sleep(0.01)
-                yield ThoughtChunk(text="Reading todo_test.py boundary ranges.")
+                yield ThoughtChunk(text=f"Reading {target_file} boundary ranges.")
                 yield CompletionChunk(function_calls=[
                     ToolCall(
                         name="read_file",
-                        args={"file_path": "todo_test.py"},
+                        args={"file_path": target_file},
                         id=f"call-{agent_id}-{turn_counter}"
                     )
                 ])
@@ -149,10 +163,10 @@ class MockGenAIClient(BaseGenAIClient):
                     ToolCall(
                         name="replace",
                         args={
-                            "file_path": "todo_test.py",
+                            "file_path": target_file,
                             "instruction": "Replace TODO with computation logic.",
-                            "old_string": "    # TODO: fix the calculation",
-                            "new_string": "    result = a + b  # Calculated correctly!"
+                            "old_string": "def calculate_area(a: float, b: float) -> float:\n    return a + b",
+                            "new_string": "def calculate_area(a: float, b: float) -> float:\n    return a * b  # Corrected calculation!"
                         },
                         id=f"call-{agent_id}-{turn_counter}"
                     )
@@ -162,7 +176,7 @@ class MockGenAIClient(BaseGenAIClient):
                 yield CompletionChunk(function_calls=[
                     ToolCall(
                         name="complete_task",
-                        args={"result": "Subagent successfully edited todo_test.py and implemented correct addition rules."},
+                        args={"result": f"Subagent successfully edited {target_file} and implemented correct computation rules."},
                         id=f"call-{agent_id}-done"
                     )
                 ])
@@ -187,7 +201,7 @@ class MockGenAIClient(BaseGenAIClient):
                     name="agent",
                     args={
                         "agent_name": "coder",
-                        "prompt": "Please edit todo_test.py and replace the TODO comment with actual calculation logic."
+                        "prompt": f"Please edit {target_file} and replace the TODO comment with actual calculation logic."
                     },
                     id=f"call-{agent_id}-{turn_counter}"
                 )

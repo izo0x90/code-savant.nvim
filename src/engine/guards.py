@@ -4,7 +4,15 @@ from pathlib import Path
 from engine.constants import DEFAULT_REQUEST_TIMEOUT
 
 from engine.tools import BaseTool
-from engine.types import ExecutionContext
+from engine.types import (
+    ExecutionContext,
+    EventEnvelope,
+    EventType,
+    TelemetryActivityType,
+    TelemetryActivityPayload,
+    ToolCallSpec,
+    ToolConfirmationRequestPayload,
+)
 
 
 class ToolExecutionGuard(ABC):
@@ -76,33 +84,47 @@ class UserConfirmationGuard(ToolExecutionGuard):
     async def before_execute(self, tool_name: str, args: Dict[str, Any], context: ExecutionContext) -> bool:
         # Pause execution and check user consent for destructive/structural tools
         if self.is_interactive and tool_name in ["write_file", "replace"]:
-            await context.message_bus.publish({
-                "type": "telemetry:activity",
-                "activity_type": "AWAITING_APPROVAL",
-                "msg": "Suspending budget countdown for user verification...",
-                "tool": tool_name
-            })
+            await context.message_bus.publish(EventEnvelope(
+                event_type=EventType.TELEMETRY_ACTIVITY,
+                payload=TelemetryActivityPayload(
+                    activity_type=TelemetryActivityType.AWAITING_APPROVAL,
+                    msg="Suspending budget countdown for user verification...",
+                    tool=tool_name
+                ),
+                sender=context.message_bus.name
+            ))
             self.timer.pause()
             
-            confirm_payload = {
-                "type": "tool-confirmation-request",
-                "toolCall": {
-                    "id": self.call_id,
-                    "name": tool_name,
-                    "args": args
-                },
-                "correlationId": self.call_id
-            }
-            response = await context.message_bus.request(confirm_payload, "tool-confirmation-response", DEFAULT_REQUEST_TIMEOUT)
+            confirm_payload = EventEnvelope(
+                event_type=EventType.TOOL_CONFIRMATION_REQUEST,
+                payload=ToolConfirmationRequestPayload(
+                    toolCall=ToolCallSpec(
+                        id=self.call_id,
+                        name=tool_name,
+                        args=args
+                    )
+                ),
+                sender=context.message_bus.name,
+                correlation_id=self.call_id
+            ).to_dict()
+            
+            response = await context.message_bus.request(
+                confirm_payload,
+                EventType.TOOL_CONFIRMATION_RESPONSE.value,
+                DEFAULT_REQUEST_TIMEOUT
+            )
             self.timer.resume()
 
             if not response.get("confirmed", False):
-                await context.message_bus.publish({
-                    "type": "telemetry:activity",
-                    "activity_type": "APPROVAL_DENIED",
-                    "msg": "User declined tool execution request.",
-                    "tool": tool_name
-                })
+                await context.message_bus.publish(EventEnvelope(
+                    event_type=EventType.TELEMETRY_ACTIVITY,
+                    payload=TelemetryActivityPayload(
+                        activity_type=TelemetryActivityType.APPROVAL_DENIED,
+                        msg="User declined tool execution request.",
+                        tool=tool_name
+                    ),
+                    sender=context.message_bus.name
+                ))
                 raise PermissionError("Tool execution rejected by user confirmation safeguard.")
         return True
 

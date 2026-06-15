@@ -182,15 +182,6 @@ local function run_tests()
   local post_edit_ok = pcall(vim.api.nvim_buf_set_lines, test_buf, 0, -1, false, { "Malicious user edit" })
   assert(not post_edit_ok, "User edits should still fail after programmatic update")
 
-  -- 6.2 Test Backward-Compatible Stubs
-  print("DEBUG: Step 6.2 - Backward-Compatible Stubs")
-  -- Verify attach_bytes_listener and set_prompt_threshold run safely as no-ops
-  local attach_ok = pcall(ui.attach_bytes_listener, ui, { bufnr = test_buf })
-  assert(attach_ok, "attach_bytes_listener stub should run without errors")
-
-  local thresh_ok = pcall(ui.set_prompt_threshold, ui, test_buf, 5)
-  assert(thresh_ok, "set_prompt_threshold stub should run without errors")
-
   -- 7. Test teardown / clean cleanup
   print("DEBUG: Step 7 - Teardown")
   ui:teardown()

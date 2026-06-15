@@ -25,7 +25,12 @@ from engine.types import (
     ExecutorAgentConfig,
     MessageRole,
     LoopStatus,
-    TerminationReason
+    TerminationReason,
+    EventEnvelope,
+    EventType,
+    TelemetryActivityType,
+    TelemetryThoughtPayload,
+    TelemetryActivityPayload
 )
 from engine.constants import (
     COMPLETE_TASK_TOOL_NAME
@@ -72,13 +77,16 @@ class AsyncToolScheduler:
             name = call.name
             args = call.args
 
-            await self.bus.publish({
-                "type": "telemetry:activity",
-                "activity_type": "TOOL_CALL_START",
-                "name": name,
-                "callId": call_id,
-                "args": args
-            })
+            await self.bus.publish(EventEnvelope(
+                event_type=EventType.TELEMETRY_ACTIVITY,
+                payload=TelemetryActivityPayload(
+                    activity_type=TelemetryActivityType.TOOL_CALL_START,
+                    name=name,
+                    callId=call_id,
+                    args=args
+                ),
+                sender=self.bus.name
+            ))
 
             tool = self.strategy.resolve_tool(name, self.context_repo)
             if not tool:
@@ -108,13 +116,16 @@ class AsyncToolScheduler:
                 except Exception as e:
                     resp = {"error": f"Unhandled tool exception: {str(e)}"}
 
-            await self.bus.publish({
-                "type": "telemetry:activity",
-                "activity_type": "TOOL_CALL_END",
-                "name": name,
-                "id": call_id,
-                "response": resp
-            })
+            await self.bus.publish(EventEnvelope(
+                event_type=EventType.TELEMETRY_ACTIVITY,
+                payload=TelemetryActivityPayload(
+                    activity_type=TelemetryActivityType.TOOL_CALL_END,
+                    name=name,
+                    id=call_id,
+                    response=resp
+                ),
+                sender=self.bus.name
+            ))
 
             tool_responses.append({
                 "functionResponse": {
@@ -158,11 +169,14 @@ class LocalAgentExecutor:
     async def inject_steering(self, message: str, context: ExecutionContext) -> None:
         """Appends interactive guidance steering directives into queue."""
         self.pending_hints_queue.append(message)
-        await context.message_bus.publish({
-            "type": "telemetry:activity",
-            "activity_type": "STEERING_QUEUED",
-            "msg": f"Queued user steering payload: '{message}'"
-        })
+        await context.message_bus.publish(EventEnvelope(
+            event_type=EventType.TELEMETRY_ACTIVITY,
+            payload=TelemetryActivityPayload(
+                activity_type=TelemetryActivityType.STEERING_QUEUED,
+                msg=f"Queued user steering payload: '{message}'"
+            ),
+            sender=context.message_bus.name
+        ))
 
     async def call_model_async(self, turn_counter: int, context: ExecutionContext) -> AsyncIterator[Union[ThoughtChunk, CompletionChunk]]:
         """
@@ -204,12 +218,15 @@ class LocalAgentExecutor:
         """Orchestrates single turn execution context compile, model generate, and scheduling."""
         prompt_id = f"replica-{self.definition.name}#{turn_counter}"
         
-        await context.message_bus.publish({
-            "type": "telemetry:activity",
-            "activity_type": "TURN_START",
-            "msg": f"Starting dispatch turn cycle #{turn_counter}",
-            "prompt_id": prompt_id
-        })
+        await context.message_bus.publish(EventEnvelope(
+            event_type=EventType.TELEMETRY_ACTIVITY,
+            payload=TelemetryActivityPayload(
+                activity_type=TelemetryActivityType.TURN_START,
+                msg=f"Starting dispatch turn cycle #{turn_counter}",
+                prompt_id=prompt_id
+            ),
+            sender=context.message_bus.name
+        ))
 
         # 1. Chat compression service executed before compilation ticks
         compressor = ChatCompressionService(context.client)
@@ -219,22 +236,26 @@ class LocalAgentExecutor:
         function_calls: List[ToolCall] = []
         async for chunk in self.call_model_async(turn_counter, context):
             if isinstance(chunk, ThoughtChunk):
-                await context.message_bus.publish({
-                    "type": "telemetry:thought",
-                    "text": chunk.text
-                })
+                await context.message_bus.publish(EventEnvelope(
+                    event_type=EventType.TELEMETRY_THOUGHT,
+                    payload=TelemetryThoughtPayload(text=chunk.text),
+                    sender=context.message_bus.name
+                ))
             elif isinstance(chunk, CompletionChunk):
                 if chunk.function_calls:
                     function_calls.extend(chunk.function_calls)
 
         # Handle direct thought output with no tools
         if not function_calls:
-            await context.message_bus.publish({
-                "type": "telemetry:activity",
-                "activity_type": "STOP",
-                "msg": "Model generated completion response with zero tool dispatches. Stopping loop.",
-                "prompt_id": prompt_id
-            })
+            await context.message_bus.publish(EventEnvelope(
+                event_type=EventType.TELEMETRY_ACTIVITY,
+                payload=TelemetryActivityPayload(
+                    activity_type=TelemetryActivityType.STOP,
+                    msg="Model generated completion response with zero tool dispatches. Stopping loop.",
+                    prompt_id=prompt_id
+                ),
+                sender=context.message_bus.name
+            ))
             return TurnOutcome(
                 status=LoopStatus.STATUS_STOP.value,
                 terminate_reason=TerminationReason.REASON_ERROR_NO_COMPLETE_TASK_CALL.value,
@@ -305,11 +326,14 @@ class LocalAgentExecutor:
 
     async def execute_final_warning_turn(self, turn_counter: int, context: ExecutionContext, reason: str) -> Optional[str]:
         """Implements final grace warning fallback turn with genuine model inference."""
-        await context.message_bus.publish({
-            "type": "telemetry:activity",
-            "activity_type": "RECOVERY",
-            "msg": f"Execution bounds exceeded due to {reason}. Granting final recovery turn..."
-        })
+        await context.message_bus.publish(EventEnvelope(
+            event_type=EventType.TELEMETRY_ACTIVITY,
+            payload=TelemetryActivityPayload(
+                activity_type=TelemetryActivityType.RECOVERY,
+                msg=f"Execution bounds exceeded due to {reason}. Granting final recovery turn..."
+            ),
+            sender=context.message_bus.name
+        ))
         
         # Retrieve strategy-driven warning prompt
         warning_prompt = self.context_strategy.compile_recovery_prompt(reason)
@@ -328,11 +352,14 @@ class LocalAgentExecutor:
             if turn_result.status == LoopStatus.STATUS_STOP.value and turn_result.terminate_reason == TerminationReason.REASON_GOAL.value:
                 return turn_result.final_result
         except Exception as e:
-            await context.message_bus.publish({
-                "type": "telemetry:activity",
-                "activity_type": "RECOVERY_FAILED",
-                "msg": f"Recovery turn aborted due to error: {e}"
-            })
+            await context.message_bus.publish(EventEnvelope(
+                event_type=EventType.TELEMETRY_ACTIVITY,
+                payload=TelemetryActivityPayload(
+                    activity_type=TelemetryActivityType.RECOVERY_FAILED,
+                    msg=f"Recovery turn aborted due to error: {e}"
+                ),
+                sender=context.message_bus.name
+            ))
         finally:
             grace_timer.stop()
 
@@ -384,13 +411,16 @@ class LocalAgentExecutor:
         )
         system_prompt = request_context.system_instruction
 
-        await context.message_bus.publish({
-            "type": "telemetry:activity",
-            "activity_type": "START",
-            "msg": f"Starting asynchronous agent loop: '{self.definition.name}'",
-            "system_prompt": system_prompt,
-            "query": query_text
-        })
+        await context.message_bus.publish(EventEnvelope(
+            event_type=EventType.TELEMETRY_ACTIVITY,
+            payload=TelemetryActivityPayload(
+                activity_type=TelemetryActivityType.START,
+                msg=f"Starting asynchronous agent loop: '{self.definition.name}'",
+                system_prompt=system_prompt,
+                query=query_text
+            ),
+            sender=context.message_bus.name
+        ))
 
         try:
             while True:
@@ -419,11 +449,14 @@ class LocalAgentExecutor:
                     hints = "\n".join(self.pending_hints_queue)
                     self.pending_hints_queue.clear()
                     
-                    await context.message_bus.publish({
-                        "type": "telemetry:activity",
-                        "activity_type": "STEERING_INJECTED",
-                        "msg": f"Injecting manual user directive: '{hints}'"
-                    })
+                    await context.message_bus.publish(EventEnvelope(
+                        event_type=EventType.TELEMETRY_ACTIVITY,
+                        payload=TelemetryActivityPayload(
+                            activity_type=TelemetryActivityType.STEERING_INJECTED,
+                            msg=f"Injecting manual user directive: '{hints}'"
+                        ),
+                        sender=context.message_bus.name
+                    ))
                     hint_part = TextPart(text=f"\n[User Steering Directive]:\n{hints}")
                     current_message = ChatMessage(
                         role=current_message.role,
@@ -442,11 +475,14 @@ class LocalAgentExecutor:
             else:
                 final_result = f"Failed to complete: terminated with {terminate_reason}"
 
-        await context.message_bus.publish({
-            "type": "telemetry:activity",
-            "activity_type": "END",
-            "msg": f"Asynchronous loop execution finished: {terminate_reason}",
-            "final_result": final_result
-        })
+        await context.message_bus.publish(EventEnvelope(
+            event_type=EventType.TELEMETRY_ACTIVITY,
+            payload=TelemetryActivityPayload(
+                activity_type=TelemetryActivityType.END,
+                msg=f"Asynchronous loop execution finished: {terminate_reason}",
+                response=final_result
+            ),
+            sender=context.message_bus.name
+        ))
 
         return final_result

@@ -32,6 +32,40 @@ if not commands.CodeSavantChat then
 end
 print("Test 2 Passed!")
 
+-- Test 2.5: Command arguments parsing and start_chat_session invocation
+print("Test 2.5: Verification of CodeSavantChat command arguments parsing...")
+local captured_mock_mode = nil
+local original_start_chat_session = code_savant.start_chat_session
+code_savant.start_chat_session = function(bufnr, mock_mode)
+  captured_mock_mode = mock_mode
+end
+
+-- Run command with "mock"
+vim.api.nvim_cmd({ cmd = "CodeSavantChat", args = { "mock" } }, {})
+if captured_mock_mode ~= true then
+  print("FAIL: Expected mock_mode to be true when CodeSavantChat is run with 'mock'. Got: " .. tostring(captured_mock_mode))
+  os.exit(1)
+end
+
+-- Run command with "live"
+vim.api.nvim_cmd({ cmd = "CodeSavantChat", args = { "live" } }, {})
+if captured_mock_mode ~= false then
+  print("FAIL: Expected mock_mode to be false when CodeSavantChat is run with 'live'. Got: " .. tostring(captured_mock_mode))
+  os.exit(1)
+end
+
+-- Run command with no arguments
+captured_mock_mode = nil
+vim.api.nvim_cmd({ cmd = "CodeSavantChat", args = {} }, {})
+if captured_mock_mode ~= false then
+  print("FAIL: Expected mock_mode to default to false with no arguments. Got: " .. tostring(captured_mock_mode))
+  os.exit(1)
+end
+
+-- Restore original function
+code_savant.start_chat_session = original_start_chat_session
+print("Test 2.5 Passed!")
+
 -- Test 3: Scratch-buffer generation
 print("Test 3: Verification of scratch-buffer generation and settings...")
 local result = code_savant.create_chat_buffer()

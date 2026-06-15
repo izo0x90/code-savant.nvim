@@ -38,6 +38,8 @@ M.config = {}
 M._initialized = false
 M.bootstrap_in_progress = false
 M.daemon_job_id = nil
+M._daemon_stderr_chunks = {}
+M._daemon_intentional_stop = false
 
 --- Helper to retrieve the absolute plugin root path dynamically.
 --- Computes the root from this script's path (lua/code_savant/init.lua)
@@ -146,7 +148,10 @@ function M.start_daemon()
 
   local socket_path = M.config.socket_path or CONSTANTS.DEFAULT_SOCKET_PATH
   -- Run as package module to avoid shadow types.py collision with Python standard library
-  local cmd = { python_bin, "-m", "engine.main", "--server", "--socket-path", socket_path }
+  -- Note: Do NOT use "--server" as it is an unrecognized argument and causes the daemon to crash (argparse error).
+  local cmd = { python_bin, "-m", "engine.main", "--socket-path", socket_path }
+
+  M._daemon_stderr_chunks = {}
 
   local job_id = vim.fn.jobstart(cmd, {
     cwd = plugin_root,
@@ -154,10 +159,32 @@ function M.start_daemon()
       PYTHONPATH = plugin_root .. "/src",
     },
     on_stderr = function(_, data)
-      -- Let stderr flow or log cleanly if needed
+      if data then
+        for _, line in ipairs(data) do
+          if line ~= "" then
+            table.insert(M._daemon_stderr_chunks, line)
+          end
+        end
+      end
     end,
     on_exit = function(_, exit_code)
       M.daemon_job_id = nil
+      local was_intentional = M._daemon_intentional_stop
+      M._daemon_intentional_stop = false
+
+      if exit_code ~= 0 and not was_intentional then
+        local stderr_str = table.concat(M._daemon_stderr_chunks, "\n")
+        local err_msg = string.format(
+          "[CodeSavant Daemon Crash] The background daemon exited unexpectedly with code %d.\n",
+          exit_code
+        )
+        if stderr_str ~= "" then
+          err_msg = err_msg .. "Stderr Output:\n" .. stderr_str
+        end
+        vim.schedule(function()
+          vim.notify(err_msg, vim.log.levels.ERROR)
+        end)
+      end
     end
   })
 
@@ -170,7 +197,7 @@ function M.start_daemon()
 end
 
 --- Ensures daemon is running, spawning it if missing, and notifies via callback.
---- @param callback fun(success: boolean)
+--- @param callback fun(success: boolean, err_msg?: string)
 function M.ensure_daemon_running(callback)
   if not callback then
     error("[CodeSavant Error] ensure_daemon_running requires a callback function")
@@ -185,8 +212,9 @@ function M.ensure_daemon_running(callback)
     -- Spawn the daemon since it's not running
     local ok, err = pcall(M.start_daemon)
     if not ok then
-      vim.notify("[CodeSavant Error] Daemon startup failed: " .. tostring(err), vim.log.levels.ERROR)
-      callback(false)
+      local err_msg = "[CodeSavant Error] Daemon startup failed: " .. tostring(err)
+      vim.notify(err_msg, vim.log.levels.ERROR)
+      callback(false, err_msg)
       return
     end
 
@@ -206,7 +234,12 @@ function M.ensure_daemon_running(callback)
         elseif attempts >= max_attempts then
           uv.timer_stop(timer)
           uv.close(timer)
-          callback(false)
+          local stderr_str = table.concat(M._daemon_stderr_chunks, "\n")
+          local err_msg = "[CodeSavant Error] Unable to connect to background daemon (connection timeout)."
+          if stderr_str ~= "" then
+            err_msg = err_msg .. "\nDaemon Stderr Output:\n" .. stderr_str
+          end
+          callback(false, err_msg)
         end
       end)
     end)
@@ -216,6 +249,7 @@ end
 --- Stops the running daemon job if it was spawned by this session.
 function M.stop_daemon()
   if M.daemon_job_id then
+    M._daemon_intentional_stop = true
     vim.fn.jobstop(M.daemon_job_id)
     M.daemon_job_id = nil
   end
@@ -234,18 +268,19 @@ end
 --- Asynchronously starts/ensures daemon is running, connects to the UDS pipe,
 --- and registers network handlers.
 --- @param bufnr integer
-function M.start_chat_session(bufnr)
-  M.ensure_daemon_running(function(success)
+--- @param mock_mode? boolean Optional mock mode flag
+function M.start_chat_session(bufnr, mock_mode)
+  M.ensure_daemon_running(function(success, err_msg)
     if not success then
       vim.schedule(function()
-        vim.notify("[CodeSavant Error] Unable to connect to background mock daemon.", vim.log.levels.ERROR)
+        vim.notify(err_msg or "[CodeSavant Error] Unable to connect to background mock daemon.", vim.log.levels.ERROR)
       end)
       return
     end
 
     -- Connect over socket pipe and initiate session
     local socket_path = M.config.socket_path or CONSTANTS.DEFAULT_SOCKET_PATH
-    Network.connect(socket_path, bufnr, vim.fn.getcwd())
+    Network.connect(socket_path, bufnr, vim.fn.getcwd(), mock_mode)
     
     -- Register incoming message stream handler (JSON-RPC listener)
     Network.add_listener(bufnr, function(parsed)
@@ -261,12 +296,12 @@ function M.start_chat_session(bufnr)
         UI:run_programmatic_update(bufnr, function()
           -- Handle daemon/executor error frames cleanly
           if parsed.error then
-            local err_msg = string.format("[CodeSavant Daemon Error] %s (Code: %s)",
+            local daemon_err_msg = string.format("[CodeSavant Daemon Error] %s (Code: %s)",
               tostring(parsed.error.message or "Unknown Error"), tostring(parsed.error.code or "nil"))
             if parsed.error.data then
-              err_msg = err_msg .. " - " .. vim.inspect(parsed.error.data)
+              daemon_err_msg = daemon_err_msg .. " - " .. vim.inspect(parsed.error.data)
             end
-            vim.notify(err_msg, vim.log.levels.ERROR)
+            vim.notify(daemon_err_msg, vim.log.levels.ERROR)
 
             -- Clean up the thinking line indicator to keep buffer responsive
             local thinking_row = find_thinking_line(bufnr)
@@ -296,6 +331,10 @@ function M.start_chat_session(bufnr)
             local params = parsed.params or {}
             local text = params.text or ""
             if text ~= "" then
+              -- LOUD error surfacing for stream crashes
+              if text:find("[CodeSavant Error]", 1, true) then
+                vim.notify(text, vim.log.levels.ERROR)
+              end
               local lines = vim.split(text, "\n", { plain = true })
               local thinking_row = find_thinking_line(bufnr)
               if thinking_row then
@@ -396,9 +435,23 @@ local function handle_action_at_cursor(history_bufnr, action_callback)
   for id, cached in pairs(UI.collapsed_blocks_cache) do
     if cached.bufnr == history_bufnr then
       local pos = vim.api.nvim_buf_get_extmark_by_id(history_bufnr, UI.namespace, cached.extmark_id, {})
-      if pos and pos[1] == cursor_row then
-        action_callback(id, cached)
-        return true
+      if pos and #pos > 0 then
+        local start_row = pos[1]
+        local matched = false
+        if cached.status == "expanded" then
+          if cursor_row >= start_row and cursor_row < start_row + (cached.height or 1) then
+            matched = true
+          end
+        else
+          if start_row == cursor_row then
+            matched = true
+          end
+        end
+
+        if matched then
+          action_callback(id, cached)
+          return true
+        end
       end
     end
   end
@@ -889,11 +942,32 @@ function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", DEFAULT_CONFIG, opts or {})
 
   -- Register public commands
-  vim.api.nvim_create_user_command(CONSTANTS.COMMAND_CHAT, function()
+  vim.api.nvim_create_user_command(CONSTANTS.COMMAND_CHAT, function(cmd_opts)
+    local mock_mode = false
+    if cmd_opts.args ~= "" then
+      local arg = cmd_opts.args:lower():gsub("^%s+", ""):gsub("%s+$", "")
+      if arg == "mock" or arg == "--mock" or arg == "-m" then
+        mock_mode = true
+      elseif arg == "live" or arg == "--live" or arg == "-l" then
+        mock_mode = false
+      else
+        vim.schedule(function()
+          vim.notify("[CodeSavant Error] Invalid argument: " .. cmd_opts.args .. ". Use 'mock' or 'live'.", vim.log.levels.ERROR)
+        end)
+        return
+      end
+    end
+
     local result = M.create_chat_buffer()
     -- Start connection and stream sessions in the active split window
-    M.start_chat_session(result.bufnr)
-  end, { force = true })
+    M.start_chat_session(result.bufnr, mock_mode)
+  end, {
+    nargs = "?",
+    complete = function()
+      return { "mock", "live" }
+    end,
+    force = true,
+  })
 
   vim.api.nvim_create_user_command("CodeSavantSessions", function()
     M.select_session()

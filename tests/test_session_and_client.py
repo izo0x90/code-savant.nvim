@@ -2,11 +2,10 @@ import os
 import shutil
 import asyncio
 import pytest
-from typing import Dict, Any
 from pathlib import Path
 
-from engine.sessions import SessionManager, AgentSession, SessionMetadataPayload, SessionMetaSidecar
-from engine.client import MockGenAIClient, LiveGenAIClient
+from engine.sessions import SessionManager, AgentSession, SessionMetadataPayload
+from engine.client import MockGenAIClient
 from engine.types import ThoughtChunk, CompletionChunk, ChatMessage, TextPart, ExecutorAgentConfig, ExecutionContext
 from engine.executor import LocalAgentExecutor
 from engine.tools import CompleteTaskTool

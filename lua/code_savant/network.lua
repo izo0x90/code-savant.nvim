@@ -60,8 +60,9 @@ end
 --- @param socket_path string
 --- @param bufnr integer
 --- @param workspace_path? string Optional workspace path to start a session with
+--- @param mock_mode? boolean Optional mock mode flag
 --- @return CodeSavantConnection
-function Network.connect(socket_path, bufnr, workspace_path)
+function Network.connect(socket_path, bufnr, workspace_path, mock_mode)
   -- 1. Parameter Validation with early exits & loud errors (Guideline 1, 4)
   if type(socket_path) ~= "string" or socket_path == "" then
     error("Invalid argument 'socket_path': must be a non-empty string. Got: " .. vim.inspect(socket_path))
@@ -120,10 +121,14 @@ function Network.connect(socket_path, bufnr, workspace_path)
       if active_conn then
         vim.schedule(function()
           local path = active_conn.workspace_path or vim.fn.getcwd()
-          Network.send_request(active_conn, "session/start", {
+          local params = {
             workspace_path = path,
             agent_profile = "coder"
-          })
+          }
+          if active_conn.mock_mode ~= nil then
+            params.mock_mode = active_conn.mock_mode
+          end
+          Network.send_request(active_conn, "session/start", params)
         end)
       end
     end
@@ -135,6 +140,7 @@ function Network.connect(socket_path, bufnr, workspace_path)
     bufnr = bufnr,
     socket_path = socket_path,
     workspace_path = workspace_path,
+    mock_mode = mock_mode,
     accumulator = "",
     listeners = listeners,
   }

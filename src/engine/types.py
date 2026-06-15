@@ -4,7 +4,7 @@ Used strictly for internal communication; Pydantic or dicts are used at serializ
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, List, Optional, Dict, Generic, TypeVar, Union, Protocol, AsyncIterator
@@ -27,6 +27,7 @@ class SessionMetadataPayload(BaseModel):
     created_at: Optional[str] = Field(default=None, description="ISO timestamp when session was created.")
     last_updated: Optional[str] = Field(default=None, description="ISO timestamp when session was last updated.")
     turn_count: Optional[int] = Field(default=None, description="The number of turns completed in the session.")
+    mock_mode: bool = Field(default=False, description="Whether the session is running in mock mode.")
 
 
 class SessionMetaSidecar(BaseModel):
@@ -258,79 +259,82 @@ class TurnOutcome:
 class EventType(str, Enum):
     TOOL_CONFIRMATION_REQUEST = "tool-confirmation-request"
     TOOL_CONFIRMATION_RESPONSE = "tool-confirmation-response"
-    TURN_START = "turn-start"
-    TURN_END = "turn-end"
-    TELEMETRY_LOG = "telemetry-log"
-    ACTIVITY = "activity"
+    TELEMETRY_THOUGHT = "telemetry:thought"
+    TELEMETRY_ACTIVITY = "telemetry:activity"
 
 
-class ActivityType(str, Enum):
-    TOOL_START = "tool-start"
-    TOOL_END = "tool-end"
-    MODEL_START = "model-start"
-    MODEL_END = "model-end"
-    SUBAGENT_START = "subagent-start"
-    SUBAGENT_END = "subagent-end"
+class TelemetryActivityType(str, Enum):
+    START = "START"
+    TURN_START = "TURN_START"
+    STEERING_QUEUED = "STEERING_QUEUED"
+    STEERING_INJECTED = "STEERING_INJECTED"
+    TOOL_CALL_START = "TOOL_CALL_START"
+    TOOL_CALL_END = "TOOL_CALL_END"
+    RECOVERY = "RECOVERY"
+    RECOVERY_FAILED = "RECOVERY_FAILED"
+    STOP = "STOP"
+    END = "END"
+    AWAITING_APPROVAL = "AWAITING_APPROVAL"
+    APPROVAL_DENIED = "APPROVAL_DENIED"
 
 
-@dataclass(slots=True, frozen=True)
-class ToolStartPayload:
-    tool_name: str
+class TelemetryThoughtPayload(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    text: str
+
+
+class TelemetryActivityPayload(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    activity_type: TelemetryActivityType
+    msg: str = ""
+    name: Optional[str] = None
+    callId: Optional[str] = None
+    args: Optional[Dict[str, Any]] = None
+    id: Optional[str] = None
+    response: Optional[Any] = None
+    system_prompt: Optional[str] = None
+    query: Optional[str] = None
+    prompt_id: Optional[str] = None
+    tool: Optional[str] = None
+
+
+class ToolCallSpec(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    id: str
+    name: str
     args: Dict[str, Any]
 
 
-@dataclass(slots=True, frozen=True)
-class ToolEndPayload:
-    tool_name: str
-    outcome: ToolExecutionOutcome
+class ToolConfirmationRequestPayload(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    toolCall: ToolCallSpec
 
 
-@dataclass(slots=True, frozen=True)
-class ModelStartPayload:
-    prompt_length: int
+class ToolConfirmationResponsePayload(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    confirmed: bool
 
 
-@dataclass(slots=True, frozen=True)
-class ModelEndPayload:
-    response_length: int
-
-
-@dataclass(slots=True, frozen=True)
-class EventEnvelope(Generic[T]):
+class EventEnvelope(BaseModel, Generic[T]):
     """
     Programmatic, typed generic container wrapping event payloads with metadata.
     """
+    model_config = ConfigDict(frozen=True, slots=True)
     event_type: EventType
     payload: T
     sender: str
     correlation_id: Optional[str] = None
-    timestamp: float = field(default_factory=time.time)
+    timestamp: float = Field(default_factory=time.time)
 
     def to_dict(self) -> Dict[str, Any]:
         """
-        Converts the envelope to a raw dictionary for backward compatibility with dictionary listeners.
+        Converts the envelope to a raw dictionary for backward compatibility with legacy dictionary listeners.
         """
-        raw_payload = self.payload
-        if hasattr(raw_payload, "to_dict"):
-            p_dict = raw_payload.to_dict()
-        elif hasattr(raw_payload, "dict"):
-            p_dict = raw_payload.dict()
-        elif hasattr(raw_payload, "__dict__"):
-            p_dict = {k: getattr(raw_payload, k) for k in raw_payload.__slots__} if hasattr(raw_payload, "__slots__") else raw_payload.__dict__
-        else:
-            p_dict = raw_payload
-
-        res = {
-            "type": self.event_type.value if isinstance(self.event_type, Enum) else self.event_type,
-            "sender": self.sender,
-            "payload": p_dict,
-            "timestamp": self.timestamp,
-        }
-        if self.correlation_id:
-            res["correlationId"] = self.correlation_id
-
-        # Merge payload keys directly if the payload is a dictionary to maintain 100% legacy dictionary structure
+        res = self.model_dump(mode="json")
+        res["type"] = res.pop("event_type")
+        p_dict = res.get("payload")
         if isinstance(p_dict, dict):
             for k, v in p_dict.items():
                 res.setdefault(k, v)
         return res
+

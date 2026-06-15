@@ -19,9 +19,9 @@ from engine.constants import (
     TOOL_LOG_FILE_PREFIX,
     TOOL_LOG_FILE_SUFFIX,
 )
-from engine.mock_executor import MockAgentExecutor
+from engine.client import LiveGenAIClient, MockGenAIClient
 from engine.sessions import AgentSession, SessionManager
-from engine.types import ActivityType, EventEnvelope, EventType, SessionMetadataPayload
+from engine.types import EventEnvelope, EventType, SessionMetadataPayload, TelemetryActivityType, TelemetryActivityPayload, TelemetryThoughtPayload
 
 # Centralized Logger for UDS Server
 logger = logging.getLogger("engine.uds_server")
@@ -106,6 +106,8 @@ class ActiveSessionState:
     session: AgentSession
     bus: MessageBus
     telemetry_task: asyncio.Task[None]
+    workspace_path: Path
+    session_manager: SessionManager
     executor_task: asyncio.Task[None] | None = None
 
 
@@ -277,6 +279,7 @@ class UdsServer:
         await session_manager.ensure_storage_dir()
 
         # Instantiate new session
+        mock_mode = params.get("mock_mode", False)
         session_id = f"{agent_profile}_{uuid.uuid7()}"
         session = AgentSession(
             session_id=session_id,
@@ -286,7 +289,8 @@ class UdsServer:
                 query="",
                 created_at=datetime.datetime.now().isoformat(),
                 last_updated=datetime.datetime.now().isoformat(),
-                turn_count=0
+                turn_count=0,
+                mock_mode=mock_mode
             )
         )
         await session_manager.save_session(session)
@@ -298,7 +302,9 @@ class UdsServer:
         self.active_sessions[session_id] = ActiveSessionState(
             session=session,
             bus=bus,
-            telemetry_task=telemetry_task
+            telemetry_task=telemetry_task,
+            workspace_path=Path(workspace_path),
+            session_manager=session_manager
         )
         bound_sessions.append(session_id)
 
@@ -330,12 +336,71 @@ class UdsServer:
         if state.executor_task and not state.executor_task.done():
             state.executor_task.cancel()
 
-        # Spawn new mock agent executor task
-        executor = MockAgentExecutor(state.bus)
+        # Select and inject client dynamically based on session mode
+        if state.session.metadata.mock_mode:
+            client = MockGenAIClient()
+        else:
+            api_key = os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                raise JsonRpcError(-32602, "Missing GEMINI_API_KEY environment variable")
+            client = LiveGenAIClient(api_key=api_key)
+
+        from engine.executor import LocalAgentExecutor
+        from engine.context import DefaultAgentContextStrategy
+        from engine.prompts.loader import PromptTemplateLoader
+        from engine.types import ExecutorAgentConfig, ExecutionContext, ChatMessage, MessageRole, TextPart
+        from engine.tools import (
+            CompleteTaskTool,
+            ReadFileTool,
+            WriteFileTool,
+            ListDirectoryTool,
+            GlobTool,
+            GrepSearchTool,
+            ReplaceTool,
+        )
+
+        package_root = Path(__file__).parent.resolve()
+        loader = PromptTemplateLoader(templates_dir=package_root / "prompts" / "templates")
+        strategy = DefaultAgentContextStrategy(loader=loader)
+
+        config = ExecutorAgentConfig(
+            name="coder",
+            max_turns=10,
+            max_time_seconds=60,
+            plan_mode=False,
+            requires_approval=False,
+            query=text
+        )
+
+        executor = LocalAgentExecutor(definition=config, context_strategy=strategy)
+        executor.registry.register_tool(CompleteTaskTool())
+        executor.registry.register_tool(ReadFileTool())
+        executor.registry.register_tool(WriteFileTool())
+        executor.registry.register_tool(ListDirectoryTool())
+        executor.registry.register_tool(GlobTool())
+        executor.registry.register_tool(GrepSearchTool())
+        executor.registry.register_tool(ReplaceTool())
+
+        context = ExecutionContext(
+            workspace_path=state.workspace_path,
+            message_bus=state.bus,
+            remaining_depth=3,
+            session=state.session,
+            session_manager=state.session_manager,
+            client=client
+        )
 
         async def run_executor_safely() -> None:
             try:
-                await executor.run(state.session, text)
+                # Append user prompt to session history
+                user_msg = ChatMessage(
+                    role=MessageRole.USER.value,
+                    parts=[TextPart(text=text)]
+                )
+                await state.session.append_message(user_msg)
+
+                inputs = {"target_dir": str(state.workspace_path)}
+                await executor.run(context, inputs)
             except Exception as e:
                 logger.error(f"Executor exception in session {session_id}: {e}", exc_info=True)
                 try:
@@ -401,68 +466,94 @@ class UdsServer:
         async def listener(envelope: EventEnvelope[Any]) -> None:
             await queue.put(envelope)
 
-        bus.subscribe(EventType.TELEMETRY_LOG, listener)
-        bus.subscribe(EventType.ACTIVITY, listener)
+        bus.subscribe(EventType.TELEMETRY_THOUGHT.value, listener)
+        bus.subscribe(EventType.TELEMETRY_ACTIVITY.value, listener)
 
         try:
             while True:
                 envelope = await queue.get()
                 event_type = envelope.event_type
 
-                if event_type == EventType.TELEMETRY_LOG:
-                    payload = envelope.payload if isinstance(envelope.payload, dict) else (envelope.payload.to_dict() if hasattr(envelope.payload, "to_dict") else envelope.payload)
-                    if not isinstance(payload, dict):
-                        payload = {}
-                    p_type = payload.get("type", "thought")
-
-                    if p_type in ("thought", "diff", "tool"):
-                        notification = JsonRpcCodec.encode_notification(
-                            method="telemetry/collapsed_block",
-                            params={
-                                "session_id": session_id,
-                                "id": payload.get("id", ""),
-                                "type": p_type,
-                                "title": payload.get("title", ""),
-                                "full_content": payload.get("full_content", "")
-                            }
-                        )
-                    else:
-                        notification = JsonRpcCodec.encode_notification(
-                            method="telemetry/message",
-                            params={
-                                "session_id": session_id,
-                                "text": payload.get("full_content", "")
-                            }
-                        )
-                    writer.write(notification)
-                    await writer.drain()
-
-                elif event_type == EventType.ACTIVITY:
-                    payload = envelope.payload if isinstance(envelope.payload, dict) else (envelope.payload.to_dict() if hasattr(envelope.payload, "to_dict") else envelope.payload)
-                    if not isinstance(payload, dict):
-                        payload = {}
-                    act_type = payload.get("type")
-                    status_str = "idle"
-
-                    if act_type == ActivityType.MODEL_START:
-                        status_str = "thinking"
-                    elif act_type == ActivityType.MODEL_END:
-                        status_str = "idle"
-
+                if event_type == EventType.TELEMETRY_THOUGHT:
+                    payload: TelemetryThoughtPayload = envelope.payload
                     notification = JsonRpcCodec.encode_notification(
-                        method="telemetry/status",
+                        method="telemetry/collapsed_block",
                         params={
                             "session_id": session_id,
-                            "status": status_str
+                            "id": str(uuid.uuid4()),
+                            "type": "thought",
+                            "title": "Thinking...",
+                            "full_content": payload.text
                         }
                     )
                     writer.write(notification)
                     await writer.drain()
+
+                elif event_type == EventType.TELEMETRY_ACTIVITY:
+                    payload: TelemetryActivityPayload = envelope.payload
+                    activity_type = payload.activity_type
+
+                    if activity_type == TelemetryActivityType.TURN_START:
+                        notification = JsonRpcCodec.encode_notification(
+                            method="telemetry/status",
+                            params={
+                                "session_id": session_id,
+                                "status": "thinking"
+                            }
+                        )
+                        writer.write(notification)
+                        await writer.drain()
+
+                    elif activity_type in (TelemetryActivityType.STOP, TelemetryActivityType.END):
+                        notification = JsonRpcCodec.encode_notification(
+                            method="telemetry/status",
+                            params={
+                                "session_id": session_id,
+                                "status": "idle"
+                            }
+                        )
+                        writer.write(notification)
+                        await writer.drain()
+
+                    elif activity_type == TelemetryActivityType.TOOL_CALL_START:
+                        name = payload.name or ""
+                        args = payload.args or {}
+                        args_str = json.dumps(args, indent=2) if args else ""
+                        notification = JsonRpcCodec.encode_notification(
+                            method="telemetry/collapsed_block",
+                            params={
+                                "session_id": session_id,
+                                "id": payload.callId or str(uuid.uuid4()),
+                                "type": "tool",
+                                "title": f"Invoking tool: {name}",
+                                "full_content": f"Arguments:\n{args_str}"
+                            }
+                        )
+                        writer.write(notification)
+                        await writer.drain()
+
+                    elif activity_type == TelemetryActivityType.TOOL_CALL_END:
+                        name = payload.name or ""
+                        call_id = payload.id or str(uuid.uuid4())
+                        resp = payload.response
+                        resp_str = json.dumps(resp, indent=2) if resp is not None else ""
+                        notification = JsonRpcCodec.encode_notification(
+                            method="telemetry/collapsed_block",
+                            params={
+                                "session_id": session_id,
+                                "id": call_id,
+                                "type": "tool",
+                                "title": f"Tool completed: {name}",
+                                "full_content": f"Response:\n{resp_str}"
+                            }
+                        )
+                        writer.write(notification)
+                        await writer.drain()
 
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error(f"Error in stream_session_telemetry: {e}", exc_info=True)
         finally:
-            bus.unsubscribe(EventType.TELEMETRY_LOG, listener)
-            bus.unsubscribe(EventType.ACTIVITY, listener)
+            bus.unsubscribe(EventType.TELEMETRY_THOUGHT.value, listener)
+            bus.unsubscribe(EventType.TELEMETRY_ACTIVITY.value, listener)
