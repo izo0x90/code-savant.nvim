@@ -1,0 +1,25 @@
+{
+  "socket_path": "~/.cache/code_savant/engine.sock",
+  "model": "gemini-3.5-flash",
+  "small_model": null,
+  "context_filenames": ["GEMINI.md"],
+  "global_context_dir": "~/.gemini",
+  "requires_approval": true,
+  "providers": {
+    "google": {
+      "api_key_env_var": "GEMINI_API_KEY",
+      "base_url": null,
+      "options": {}
+    },
+    "anthropic": {
+      "api_key_env_var": "ANTHROPIC_API_KEY",
+      "base_url": null,
+      "options": {}
+    },
+    "openai": {
+      "api_key_env_var": "OPENAI_API_KEY",
+      "base_url": null,
+      "options": {}
+    }
+  }
+}

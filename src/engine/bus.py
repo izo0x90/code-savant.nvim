@@ -143,7 +143,7 @@ class MessageBus:
                     f"Must be one of {[e.value for e in EventType]}"
                 )
 
-            correlation_id = raw_dict.get("correlationId")
+            correlation_id = raw_dict.get("correlation_id") or raw_dict.get("correlationId")
             payload = raw_dict.get("payload", raw_dict)
             envelope = EventEnvelope(
                 event_type=event_type,
@@ -158,7 +158,7 @@ class MessageBus:
         if not event_type:
             return
 
-        correlation_id = raw_dict.get("correlationId")
+        correlation_id = raw_dict.get("correlation_id") or raw_dict.get("correlationId")
         if correlation_id and correlation_id in self._pending_futures:
             future, expected_response_type = self._pending_futures[correlation_id]
             if event_type == expected_response_type:
@@ -194,11 +194,11 @@ class MessageBus:
         if not isinstance(response_type, str) or not response_type:
             raise ValueError("response_type must be a non-empty string")
 
-        # Reuse existing correlationId if provided (like in guards.py) or generate new one
-        correlation_id = request_payload.get("correlationId")
+        # Reuse existing correlation_id if provided (like in guards.py) or generate new one
+        correlation_id = request_payload.get("correlation_id") or request_payload.get("correlationId")
         if not correlation_id:
             correlation_id = str(uuid.uuid7())
-            request_payload["correlationId"] = correlation_id
+            request_payload["correlation_id"] = correlation_id
         else:
             correlation_id = str(correlation_id)
 

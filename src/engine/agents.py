@@ -28,6 +28,10 @@ class SubagentDefinition(BaseModel):
     max_time_seconds: int = Field(default=600, description="Maximum elapsed execution time in seconds.")
     maxTimeSeconds: int = Field(default=600, description="Compatible camelCase max time in seconds.")
     requires_approval: bool = Field(default=False, description="Whether execution actions require human-in-the-loop validation.")
+    options: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Custom capability toggles, thinking budgets, or parameters overridden for this agent."
+    )
 
     @root_validator(pre=True)
     def normalize_keys(cls, values: Dict[str, Any]) -> Dict[str, Any]:

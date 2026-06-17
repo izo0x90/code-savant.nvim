@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 
 from engine.tools import (
@@ -8,6 +8,7 @@ from engine.types import ExecutionContext, ExecutorAgentConfig
 from engine.agents import AgentRegistry
 from engine.context import ContextStrategy
 from engine.registry import ToolRegistry
+from engine.memory import HierarchicalContextManager
 
 
 class AgentArgs(BaseModel):
@@ -21,7 +22,13 @@ class AgentTool(BaseTool):
     Allows launching nested async subagent executables.
     """
 
-    def __init__(self, agent_registry: AgentRegistry, context_strategy: ContextStrategy, tool_registry: ToolRegistry):
+    def __init__(
+        self,
+        agent_registry: AgentRegistry,
+        context_strategy: ContextStrategy,
+        tool_registry: ToolRegistry,
+        memory_manager: Optional[HierarchicalContextManager] = None
+    ):
         super().__init__(
             name="agent",
             description="Delegate sub-tasks to specialized subagents. Spawns an isolated nested execution loop.",
@@ -30,6 +37,7 @@ class AgentTool(BaseTool):
         self.agent_registry = agent_registry
         self.context_strategy = context_strategy
         self.tool_registry = tool_registry
+        self.memory_manager = memory_manager
 
     async def run(self, args: AgentArgs, context: ExecutionContext) -> Dict[str, Any]:
         # Enforce Nesting Guard (Rule 1: Fail Loudly)
@@ -70,6 +78,7 @@ class AgentTool(BaseTool):
             definition=config,
             context_strategy=self.context_strategy,
             agent_registry=self.agent_registry,
+            memory_manager=self.memory_manager,
             tool_registry=self.tool_registry
         )
         

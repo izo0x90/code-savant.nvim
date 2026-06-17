@@ -20,6 +20,8 @@ from engine.constants import (
     TOOL_LOG_FILE_SUFFIX,
 )
 from engine.client import LiveGenAIClient, MockGenAIClient
+from engine.config import SettingsManager
+from engine.registry import ModelRegistryService
 from engine.sessions import AgentSession, SessionManager
 from engine.types import EventEnvelope, EventType, SessionMetadataPayload, TelemetryActivityType, TelemetryActivityPayload, TelemetryThoughtPayload
 
@@ -109,6 +111,8 @@ class ActiveSessionState:
     workspace_path: Path
     session_manager: SessionManager
     executor_task: asyncio.Task[None] | None = None
+    executor: Any | None = None
+    context: Any | None = None
 
 
 class UdsServer:
@@ -117,11 +121,21 @@ class UdsServer:
     Manages client socket streams, session registration, and event telemetry routing.
     """
     socket_path: Path
+    settings_manager: SettingsManager
+    model_registry: ModelRegistryService
     session_manager: Optional[SessionManager]
     active_sessions: Dict[str, ActiveSessionState]
 
-    def __init__(self, socket_path: Path | str, session_manager: Optional[SessionManager] = None) -> None:
+    def __init__(
+        self,
+        socket_path: Path | str,
+        settings_manager: SettingsManager,
+        model_registry: ModelRegistryService,
+        session_manager: Optional[SessionManager] = None
+    ) -> None:
         self.socket_path = Path(socket_path) if isinstance(socket_path, str) else socket_path
+        self.settings_manager = settings_manager
+        self.model_registry = model_registry
         self.session_manager = session_manager
         self.active_sessions = {}
         self._server: Optional[asyncio.Server] = None
@@ -237,6 +251,12 @@ class UdsServer:
                 await self._handle_session_start(params, msg_id, writer, bound_sessions)
             elif method == "session/send_prompt":
                 await self._handle_session_send_prompt(params, msg_id, writer)
+            elif method == "session/respond_confirmation":
+                await self._handle_session_respond_confirmation(params, msg_id, writer)
+            elif method == "session/cancel":
+                await self._handle_session_cancel(params, msg_id, writer)
+            elif method == "session/inject_steering":
+                await self._handle_session_inject_steering(params, msg_id, writer)
             elif method == "session/close":
                 await self._handle_session_close(params, msg_id, writer, bound_sessions)
             else:
@@ -340,10 +360,36 @@ class UdsServer:
         if state.session.metadata.mock_mode:
             client = MockGenAIClient()
         else:
-            api_key = os.environ.get("GEMINI_API_KEY")
+            try:
+                settings = self.settings_manager.settings
+                active_model_name = settings.model
+                model_def = self.model_registry.get_model(active_model_name)
+            except Exception as e:
+                raise JsonRpcError(-32603, f"Configuration or registry resolution failed: {e}")
+
+            provider_config = settings.providers.get(model_def.provider)
+            if not provider_config:
+                raise JsonRpcError(
+                    -32603,
+                    f"Provider '{model_def.provider}' is unconfigured in the engine settings."
+                )
+
+            api_key = await provider_config.resolve_api_key()
             if not api_key:
-                raise JsonRpcError(-32602, "Missing GEMINI_API_KEY environment variable")
-            client = LiveGenAIClient(api_key=api_key)
+                raise JsonRpcError(
+                    -32602,
+                    f"Credentials could not be resolved for provider '{model_def.provider}' of model '{active_model_name}'."
+                )
+
+            client = LiveGenAIClient(
+                api_key=api_key,
+                model_name=model_def.name,
+                base_url=provider_config.base_url,
+                capabilities=model_def.capabilities,
+                limits=model_def.limits,
+                options=model_def.options,
+                provider_options=provider_config.options
+            )
 
         from engine.executor import LocalAgentExecutor
         from engine.context import DefaultAgentContextStrategy
@@ -363,16 +409,30 @@ class UdsServer:
         loader = PromptTemplateLoader(templates_dir=package_root / "prompts" / "templates")
         strategy = DefaultAgentContextStrategy(loader=loader)
 
+        settings = self.settings_manager.settings
+
         config = ExecutorAgentConfig(
             name="coder",
             max_turns=10,
             max_time_seconds=60,
             plan_mode=False,
-            requires_approval=False,
+            requires_approval=settings.requires_approval,
             query=text
         )
 
-        executor = LocalAgentExecutor(definition=config, context_strategy=strategy)
+        from engine.memory import HierarchicalContextManager
+        memory_manager = HierarchicalContextManager(
+            workspace_path=state.workspace_path,
+            context_filenames=settings.context_filenames,
+            global_context_dir=Path(settings.global_context_dir).expanduser(),
+            max_depth=5
+        )
+
+        executor = LocalAgentExecutor(
+            definition=config,
+            context_strategy=strategy,
+            memory_manager=memory_manager
+        )
         executor.registry.register_tool(CompleteTaskTool())
         executor.registry.register_tool(ReadFileTool())
         executor.registry.register_tool(WriteFileTool())
@@ -428,10 +488,128 @@ class UdsServer:
                 except Exception as write_err:
                     logger.error(f"Failed to transmit executor error notification: {write_err}", exc_info=True)
 
+        state.executor = executor
+        state.context = context
         state.executor_task = asyncio.create_task(run_executor_safely())
 
         result = {
             "status": "queued"
+        }
+        writer.write(JsonRpcCodec.encode_response(result, msg_id))
+        await writer.drain()
+
+    async def _handle_session_respond_confirmation(
+        self,
+        params: Dict[str, Any],
+        msg_id: Any,
+        writer: asyncio.StreamWriter
+    ) -> None:
+        """Processes and forwards a user's tool confirmation decision back to the execution bus."""
+        session_id = params.get("session_id")
+        call_id = params.get("id")
+        confirmed = params.get("confirmed")
+
+        if not session_id or not call_id or confirmed is None:
+            raise JsonRpcError(-32602, "Missing required parameters: session_id, id, confirmed")
+
+        state = self.active_sessions.get(session_id)
+        if not state:
+            raise JsonRpcError(-32602, f"Active session '{session_id}' not found")
+
+        from engine.types import EventEnvelope, EventType, ToolConfirmationResponsePayload
+        await state.bus.publish(EventEnvelope(
+            event_type=EventType.TOOL_CONFIRMATION_RESPONSE,
+            payload=ToolConfirmationResponsePayload(confirmed=confirmed),
+            sender="user",
+            correlation_id=call_id
+        ))
+
+        result = {
+            "status": "responded"
+        }
+        writer.write(JsonRpcCodec.encode_response(result, msg_id))
+        await writer.drain()
+
+    async def _handle_session_cancel(
+        self,
+        params: Dict[str, Any],
+        msg_id: Any,
+        writer: asyncio.StreamWriter
+    ) -> None:
+        """Gracefully aborts any actively running execution loop for the session."""
+        session_id = params.get("session_id")
+        if not session_id:
+            raise JsonRpcError(-32602, "Missing required parameter: session_id")
+
+        state = self.active_sessions.get(session_id)
+        if not state:
+            raise JsonRpcError(-32602, f"Active session '{session_id}' not found")
+
+        # Idempotent cancellation: if active task is running, request cancel and await it
+        if state.executor_task and not state.executor_task.done():
+            state.executor_task.cancel()
+            try:
+                # Block/await its complete termination so that we prevent parallel execution races
+                await state.executor_task
+            except asyncio.CancelledError:
+                pass
+
+            # Write a collapsible warning block to indicate the termination cleanly
+            notification = JsonRpcCodec.encode_notification(
+                method="telemetry/collapsed_block",
+                params={
+                    "session_id": session_id,
+                    "id": str(uuid.uuid4()),
+                    "type": "warning",
+                    "title": "🛑 Execution Terminated by User",
+                    "full_content": "The active execution loop was aborted and all outstanding operations cancelled."
+                }
+            )
+            writer.write(notification)
+            await writer.drain()
+
+            # Set status to idle to cleanly reset UI
+            status_notif = JsonRpcCodec.encode_notification(
+                method="telemetry/status",
+                params={
+                    "session_id": session_id,
+                    "status": "idle"
+                }
+            )
+            writer.write(status_notif)
+            await writer.drain()
+
+        result = {
+            "status": "cancelled"
+        }
+        writer.write(JsonRpcCodec.encode_response(result, msg_id))
+        await writer.drain()
+
+    async def _handle_session_inject_steering(
+        self,
+        params: Dict[str, Any],
+        msg_id: Any,
+        writer: asyncio.StreamWriter
+    ) -> None:
+        """Processes and forwards manual human guidance steering inline into the active agent loop."""
+        session_id = params.get("session_id")
+        text = params.get("text")
+
+        if not session_id or not text:
+            raise JsonRpcError(-32602, "Missing required parameters: session_id, text")
+
+        state = self.active_sessions.get(session_id)
+        if not state:
+            raise JsonRpcError(-32602, f"Active session '{session_id}' not found")
+
+        if not state.executor or not state.context:
+            raise JsonRpcError(-32602, f"Active session '{session_id}' has no running executor to steer.")
+
+        # Inject human steering directives inline
+        await state.executor.inject_steering(text, state.context)
+
+        result = {
+            "status": "steered"
         }
         writer.write(JsonRpcCodec.encode_response(result, msg_id))
         await writer.drain()
@@ -468,6 +646,7 @@ class UdsServer:
 
         bus.subscribe(EventType.TELEMETRY_THOUGHT.value, listener)
         bus.subscribe(EventType.TELEMETRY_ACTIVITY.value, listener)
+        bus.subscribe(EventType.TOOL_CONFIRMATION_REQUEST.value, listener)
 
         try:
             while True:
@@ -489,6 +668,23 @@ class UdsServer:
                     writer.write(notification)
                     await writer.drain()
 
+                elif event_type == EventType.TOOL_CONFIRMATION_REQUEST:
+                    payload: ToolConfirmationRequestPayload = envelope.payload
+                    tc = payload.toolCall
+                    args_str = json.dumps(tc.args, indent=2) if tc.args else ""
+                    notification = JsonRpcCodec.encode_notification(
+                        method="telemetry/collapsed_block",
+                        params={
+                            "session_id": session_id,
+                            "id": tc.id,
+                            "type": "confirmation",
+                            "title": f"⚠️ Authorization Required: Invoke tool {tc.name}",
+                            "full_content": f"Arguments:\n{args_str}\n\nPress 'a' to Approve or 'd' to Decline."
+                        }
+                    )
+                    writer.write(notification)
+                    await writer.drain()
+
                 elif event_type == EventType.TELEMETRY_ACTIVITY:
                     payload: TelemetryActivityPayload = envelope.payload
                     activity_type = payload.activity_type
@@ -504,7 +700,47 @@ class UdsServer:
                         writer.write(notification)
                         await writer.drain()
 
+                    elif activity_type == TelemetryActivityType.RECOVERY:
+                        notification = JsonRpcCodec.encode_notification(
+                            method="telemetry/collapsed_block",
+                            params={
+                                "session_id": session_id,
+                                "id": str(uuid.uuid4()),
+                                "type": "warning",
+                                "title": "⚠️ Execution Limit Exceeded (Recovery)",
+                                "full_content": payload.msg or ""
+                            }
+                        )
+                        writer.write(notification)
+                        await writer.drain()
+
+                    elif activity_type == TelemetryActivityType.STEERING_INJECTED:
+                        notification = JsonRpcCodec.encode_notification(
+                            method="telemetry/collapsed_block",
+                            params={
+                                "session_id": session_id,
+                                "id": str(uuid.uuid4()),
+                                "type": "steering",
+                                "title": "👤 Steering Directive Injected",
+                                "full_content": payload.msg or ""
+                            }
+                        )
+                        writer.write(notification)
+                        await writer.drain()
+
                     elif activity_type in (TelemetryActivityType.STOP, TelemetryActivityType.END):
+                        response_text = getattr(payload, "response", None)
+                        if activity_type == TelemetryActivityType.END and response_text:
+                            msg_notif = JsonRpcCodec.encode_notification(
+                                method="telemetry/message",
+                                params={
+                                    "session_id": session_id,
+                                    "text": str(response_text)
+                                }
+                            )
+                            writer.write(msg_notif)
+                            await writer.drain()
+
                         notification = JsonRpcCodec.encode_notification(
                             method="telemetry/status",
                             params={
@@ -557,3 +793,4 @@ class UdsServer:
         finally:
             bus.unsubscribe(EventType.TELEMETRY_THOUGHT.value, listener)
             bus.unsubscribe(EventType.TELEMETRY_ACTIVITY.value, listener)
+            bus.unsubscribe(EventType.TOOL_CONFIRMATION_REQUEST.value, listener)

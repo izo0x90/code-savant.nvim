@@ -1,0 +1,17 @@
+{
+  "gemini-3.5-flash": {
+    "name": "gemini-3.5-flash",
+    "provider": "google",
+    "capabilities": {
+      "supports_temperature": true,
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_json_mode": true
+    },
+    "limits": {
+      "context_tokens": 1000000,
+      "max_output_tokens": 60000
+    },
+    "options": {}
+  }
+}

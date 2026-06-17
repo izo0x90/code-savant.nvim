@@ -133,6 +133,7 @@ class FunctionCallPart(BaseModel):
     name: str
     args: Dict[str, JsonValue]
     id: str
+    thought_signature: Optional[str] = None
 
 class FunctionResponsePart(BaseModel):
     """
@@ -152,6 +153,7 @@ class ToolCallPart(BaseModel):
     name: str
     args: Dict[str, JsonValue]
     id: str
+    thought_signature: Optional[str] = None
 
 class ToolResultPart(BaseModel):
     """
@@ -224,6 +226,7 @@ class ToolCall:
     name: str
     args: Dict[str, Any]
     id: str
+    thought_signature: Optional[str] = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -234,6 +237,7 @@ class ThoughtChunk:
 @dataclass(slots=True, frozen=True)
 class CompletionChunk:
     function_calls: List[ToolCall]
+    thought_signature: Optional[str] = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -307,7 +311,7 @@ class ToolCallSpec(BaseModel):
 
 class ToolConfirmationRequestPayload(BaseModel):
     model_config = ConfigDict(frozen=True, slots=True)
-    toolCall: ToolCallSpec
+    tool_call: ToolCallSpec
 
 
 class ToolConfirmationResponsePayload(BaseModel):
@@ -332,6 +336,13 @@ class EventEnvelope(BaseModel, Generic[T]):
         """
         res = self.model_dump(mode="json")
         res["type"] = res.pop("event_type")
+        
+        # Backward compatibility aliases
+        if "correlation_id" in res:
+            res["correlationId"] = res["correlation_id"]
+        if "tool_call" in res:
+            res["toolCall"] = res["tool_call"]
+
         p_dict = res.get("payload")
         if isinstance(p_dict, dict):
             for k, v in p_dict.items():

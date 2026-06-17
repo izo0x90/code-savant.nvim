@@ -12,6 +12,7 @@ from engine.context import (
     DefaultPromptInputs,
     DefaultAgentContextStrategy
 )
+from engine.memory import HierarchicalContextManager
 from engine.types import SessionMetadataPayload
 
 
@@ -69,12 +70,18 @@ maxTimeSeconds: 30
 
         # Initialize the Context Source Repository
         from engine.registry import ToolRegistry
+        memory_manager = HierarchicalContextManager(
+            workspace_path=Path(os.getcwd()),
+            context_filenames=["GEMINI.md"],
+            global_context_dir=Path("~/.gemini").expanduser(),
+            max_depth=5
+        )
         context_repo = ContextSourceRepository(
             workspace_path=Path(os.getcwd()),
             tool_registry=ToolRegistry(),
             skill_manager=skill_manager,
             agent_registry=agent_registry,
-            context_filenames=["GEMINI.md"]
+            memory_manager=memory_manager
         )
 
         strategy = DefaultAgentContextStrategy(loader=loader)
@@ -142,3 +149,53 @@ if __name__ == "__main__":
 @pytest.mark.asyncio
 async def test_prompt_system_all():
     await main()
+
+
+@pytest.mark.asyncio
+async def test_hierarchical_context_manager(tmp_path: Path):
+    # Setup temporary directory structures
+    global_dir = tmp_path / "global_gemini"
+    global_dir.mkdir()
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    # Create dummy .git to resolve project root correctly
+    (global_dir / ".git").mkdir()
+    (workspace_dir / ".git").mkdir()
+
+    # Create recursive sub-files inside workspace
+    sub_file_1 = workspace_dir / "file1.txt"
+    sub_file_1.write_text("Hello from file1! Inline import: @file2.txt")
+    
+    sub_file_2 = workspace_dir / "file2.txt"
+    sub_file_2.write_text("Hello from file2! Inline code mention: `@file1.txt` and circular ref: @file1.txt")
+
+    # Create memory context files
+    global_mem = global_dir / "GEMINI.md"
+    global_mem.write_text("Global config guidelines. Import: @file1.txt")
+
+    project_mem = workspace_dir / "GEMINI.md"
+    project_mem.write_text("Project configuration. Import: @file1.txt")
+
+    # Instantiate our pure context manager
+    manager = HierarchicalContextManager(
+        workspace_path=workspace_dir,
+        context_filenames=["GEMINI.md"],
+        global_context_dir=global_dir,
+        max_depth=5
+    )
+
+    result = await manager.load_hierarchical_context()
+
+    # Asserts
+    assert "<global_context>" in result
+    assert "<project_context>" in result
+    assert "Global config guidelines" in result
+    assert "Project configuration" in result
+    assert "Hello from file1!" in result
+    assert "Hello from file2!" in result
+    # Mentions inside code blocks (`@file1.txt`) must NOT be resolved/inlined
+    assert "`@file1.txt`" in result
+    # Circular imports are detected and prevented (file1 already processed)
+    assert "<!-- File already processed: file1.txt -->" in result or "<!-- File already processed" in result
+

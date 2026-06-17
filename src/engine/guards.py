@@ -98,7 +98,7 @@ class UserConfirmationGuard(ToolExecutionGuard):
             confirm_payload = EventEnvelope(
                 event_type=EventType.TOOL_CONFIRMATION_REQUEST,
                 payload=ToolConfirmationRequestPayload(
-                    toolCall=ToolCallSpec(
+                    tool_call=ToolCallSpec(
                         id=self.call_id,
                         name=tool_name,
                         args=args

@@ -4,7 +4,7 @@ Keeps Live API interactions completely separate from high-fidelity Mocking.
 Operates strictly via dependency injection; no internal environment variable reading.
 """
 
-from typing import AsyncIterator, List, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 from google import genai
 from google.genai import types
 
@@ -19,6 +19,7 @@ from engine.types import (
     FunctionDeclarationSpec
 )
 from engine.constants import DEFAULT_MODEL_NAME
+from engine.config import ModelCapabilityConfig, ModelLimitConfig
 
 
 class BaseGenAIClient:
@@ -46,12 +47,42 @@ class LiveGenAIClient(BaseGenAIClient):
     All credentials are fully injected; no os.getenv calls allowed.
     """
 
-    def __init__(self, api_key: str, model_name: str = DEFAULT_MODEL_NAME):
+    def __init__(
+        self,
+        api_key: str,
+        model_name: str = DEFAULT_MODEL_NAME,
+        base_url: Optional[str] = None,
+        capabilities: Optional[ModelCapabilityConfig] = None,
+        limits: Optional[ModelLimitConfig] = None,
+        options: Optional[Dict[str, Any]] = None,
+        provider_options: Optional[Dict[str, Any]] = None
+    ):
         if not api_key:
             raise ValueError("LiveGenAIClient requires a valid api_key.")
         self.api_key = api_key
         self.model_name = model_name
-        self._client = genai.Client(api_key=self.api_key)
+        self.capabilities = capabilities
+        self.limits = limits
+        self.options = options or {}
+
+        client_kwargs = {"api_key": self.api_key}
+        
+        # Build http_options if base_url or provider-level http options exist
+        http_opts = {}
+        if base_url:
+            http_opts["base_url"] = base_url
+            http_opts["base_url_resource_scope"] = types.ResourceScope.COLLECTION
+
+        if provider_options:
+            valid_http_fields = getattr(types.HttpOptions, "model_fields", {})
+            for k, v in provider_options.items():
+                if k in valid_http_fields:
+                    http_opts[k] = v
+
+        if http_opts:
+            client_kwargs["http_options"] = types.HttpOptions(**http_opts)
+
+        self._client = genai.Client(**client_kwargs)
 
     async def generate_response_stream(
         self,
@@ -71,9 +102,24 @@ class LiveGenAIClient(BaseGenAIClient):
                 if isinstance(part, TextPart):
                     parts.append(types.Part.from_text(text=part.text))
                 elif isinstance(part, FunctionCallPart):
-                    parts.append(types.Part.from_function_call(
-                        name=part.name,
-                        args=part.args
+                    # Bypassing standard helper to append thought_signature bytes directly!
+                    sig_bytes = None
+                    if part.thought_signature:
+                        try:
+                            import base64
+                            sig_bytes = base64.b64decode(part.thought_signature)
+                        except Exception:
+                            sig_bytes = b"skip_thought_signature_validator"
+                    else:
+                        sig_bytes = b"skip_thought_signature_validator"
+
+                    parts.append(types.Part(
+                        function_call=types.FunctionCall(
+                            name=part.name,
+                            args=part.args,
+                            id=part.id
+                        ),
+                        thought_signature=sig_bytes
                     ))
                 elif isinstance(part, FunctionResponsePart):
                     parts.append(types.Part.from_function_response(
@@ -82,11 +128,31 @@ class LiveGenAIClient(BaseGenAIClient):
                     ))
             contents.append(types.Content(role=role, parts=parts))
 
-        config = types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            tools=[types.Tool(function_declarations=[t.model_dump() for t in tools_declarations])] if tools_declarations else [],
-            temperature=0.0
-        )
+        # Build GenerateContentConfig based on capabilities, limits and model options
+        config_kwargs = {
+            "system_instruction": system_prompt,
+        }
+        
+        # Handle temperature option based on capabilities
+        if not self.capabilities or self.capabilities.supports_temperature:
+            config_kwargs["temperature"] = 0.0
+
+        # Handle tools option based on capabilities
+        if tools_declarations and (not self.capabilities or self.capabilities.supports_tools):
+            config_kwargs["tools"] = [types.Tool(function_declarations=[t.model_dump() for t in tools_declarations])]
+
+        # Handle limits
+        if self.limits and self.limits.max_output_tokens:
+            config_kwargs["max_output_tokens"] = self.limits.max_output_tokens
+
+        # Merge model-level options if they are valid GenerateContentConfig fields
+        if self.options:
+            valid_config_fields = getattr(types.GenerateContentConfig, "model_fields", {})
+            for k, v in self.options.items():
+                if k in valid_config_fields:
+                    config_kwargs[k] = v
+
+        config = types.GenerateContentConfig(**config_kwargs)
 
         response_stream = await self._client.aio.models.generate_content_stream(
             model=self.model_name,
@@ -94,20 +160,37 @@ class LiveGenAIClient(BaseGenAIClient):
             config=config
         )
 
+        import base64
+
         async for response_chunk in response_stream:
             text = response_chunk.text
             if text:
                 yield ThoughtChunk(text=text)
             
+            sig_b64 = None
+            if response_chunk.candidates:
+                for cand in response_chunk.candidates:
+                    if cand.content and cand.content.parts:
+                        for part in cand.content.parts:
+                            sig = getattr(part, "thought_signature", None)
+                            if sig:
+                                sig_b64 = base64.b64encode(sig).decode("utf-8")
+                                break
+                    if sig_b64:
+                        break
+
             if response_chunk.function_calls:
                 f_calls = []
                 for fc in response_chunk.function_calls:
                     f_calls.append(ToolCall(
                         name=fc.name,
                         args=fc.args or {},
-                        id=getattr(fc, "id", f"call-{agent_id}")
+                        id=getattr(fc, "id", f"call-{agent_id}"),
+                        thought_signature=sig_b64
                     ))
-                yield CompletionChunk(function_calls=f_calls)
+                yield CompletionChunk(function_calls=f_calls, thought_signature=sig_b64)
+            elif sig_b64:
+                yield CompletionChunk(function_calls=[], thought_signature=sig_b64)
 
 
 class MockGenAIClient(BaseGenAIClient):

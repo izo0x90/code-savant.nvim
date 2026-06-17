@@ -31,6 +31,9 @@ local DEFAULT_CONFIG = {
     prev_session = "<S-H>", -- Local normal-mode cycle backward
     open_buffer = "gO",     -- Key to open thought space in a new buffer split
     open_float = "K",       -- Key to open thought space in a floating window
+    cancel = "<C-c>",       -- Key to cancel/abort outstanding agent runs
+    approve = "a",          -- Key to approve tool confirmation requests
+    decline = "d",          -- Key to decline tool confirmation requests
   }
 }
 
@@ -315,16 +318,64 @@ function M.start_chat_session(bufnr, mock_mode)
           if parsed.method == "telemetry/collapsed_block" then
             local params = parsed.params or {}
             local thinking_row = find_thinking_line(bufnr)
+            local target_row
             if thinking_row then
               -- Shifting thinking indicator down by inserting an empty line at its row,
               -- and anchoring the collapsed block extmark on the newly inserted row.
               vim.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row, false, { "" })
-              UI:on_collapsed_block(params.id, params.type, params.title, params.full_content, bufnr, thinking_row)
+              target_row = thinking_row
             else
               local line_count = vim.api.nvim_buf_line_count(bufnr)
-              local target_row = math.max(0, line_count - 1)
+              target_row = math.max(0, line_count - 1)
               vim.api.nvim_buf_set_lines(bufnr, target_row, target_row, false, { "" })
-              UI:on_collapsed_block(params.id, params.type, params.title, params.full_content, bufnr, target_row)
+            end
+            UI:on_collapsed_block(params.id, params.type, params.title, params.full_content, bufnr, target_row)
+
+            -- Bind buffer-local shortcuts if this is an interactive tool confirmation request
+            if params.type == "confirmation" then
+              local Network = require("code_savant.network")
+              local keymaps = M.config.keymaps or DEFAULT_CONFIG.keymaps
+              local function respond(confirmed)
+                -- Send the decision back to the daemon
+                pcall(Network.send_request, bufnr, "session/respond_confirmation", {
+                  session_id = params.session_id,
+                  id = params.id,
+                  confirmed = confirmed
+                })
+                -- Delete the mapping to make it single-use
+                pcall(vim.keymap.del, "n", keymaps.approve, { buffer = bufnr })
+                pcall(vim.keymap.del, "n", keymaps.decline, { buffer = bufnr })
+
+                -- Inline status update
+                local result_text = confirmed and " ✓ APPROVED" or " ✗ DECLINED"
+                local hl = confirmed and "DiagnosticOk" or "DiagnosticError"
+                pcall(vim.api.nvim_buf_set_extmark, bufnr, UI.namespace, target_row, 0, {
+                  id = UI.collapsed_blocks_cache[params.id].extmark_id,
+                  virt_text = { { "▶ Approve/Decline: " .. params.title .. result_text, hl } },
+                  virt_text_pos = "overlay",
+                })
+              end
+
+              -- Set keymaps for approval and decline
+              vim.keymap.set("n", keymaps.approve, function()
+                local cursor = vim.api.nvim_win_get_cursor(0)
+                if cursor[1] - 1 == target_row then
+                  respond(true)
+                else
+                  -- Standard action fallback
+                  vim.api.nvim_feedkeys(keymaps.approve, "n", false)
+                end
+              end, { buffer = bufnr, silent = true, desc = "Approve tool execution" })
+
+              vim.keymap.set("n", keymaps.decline, function()
+                local cursor = vim.api.nvim_win_get_cursor(0)
+                if cursor[1] - 1 == target_row then
+                  respond(false)
+                else
+                  -- Standard action fallback
+                  vim.api.nvim_feedkeys(keymaps.decline, "n", false)
+                end
+              end, { buffer = bufnr, silent = true, desc = "Decline tool execution" })
             end
 
           elseif parsed.method == "telemetry/message" then
@@ -349,6 +400,7 @@ function M.start_chat_session(bufnr, mock_mode)
 
           elseif parsed.method == "telemetry/status" then
             local params = parsed.params or {}
+            vim.b[bufnr].status = params.status
             if params.status == "idle" then
               local thinking_row = find_thinking_line(bufnr)
               if thinking_row then
@@ -397,6 +449,39 @@ local function handle_enter(input_bufnr)
     return
   end
 
+  local status = vim.b[history_bufnr].status or "idle"
+  if status == "thinking" then
+    UI:run_programmatic_update(history_bufnr, function()
+      local line_count = vim.api.nvim_buf_line_count(history_bufnr)
+      local to_append = {
+        "",
+        "User (Steering Directive):",
+        "  " .. prompt_text,
+        ""
+      }
+      local insert_start = (line_count == 1 and vim.api.nvim_buf_get_lines(history_bufnr, 0, 1, false)[1] == "") and 0 or line_count
+      vim.api.nvim_buf_set_lines(history_bufnr, insert_start, -1, false, to_append)
+
+      -- Scroll history window
+      local winids = vim.fn.win_findbuf(history_bufnr)
+      if winids and #winids > 0 then
+        local history_winid_found = winids[1]
+        local new_line_count = vim.api.nvim_buf_line_count(history_bufnr)
+        pcall(vim.api.nvim_win_set_cursor, history_winid_found, { new_line_count, 0 })
+      end
+    end)
+
+    -- Clear input buffer
+    vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {})
+
+    -- Send steering request
+    pcall(Network.send_request, conn, "session/inject_steering", {
+      session_id = conn.session_id,
+      text = prompt_text
+    })
+    return
+  end
+
   UI:run_programmatic_update(history_bufnr, function()
     local line_count = vim.api.nvim_buf_line_count(history_bufnr)
     local to_append = {}
@@ -428,6 +513,14 @@ local function handle_enter(input_bufnr)
 
   -- Send prompt
   Network.send_prompt(conn, prompt_text)
+end
+
+local function handle_cancel(bufnr)
+  local history_bufnr = vim.b[bufnr].partner_buf or bufnr
+  local conn = Network.get_connection(history_bufnr)
+  if conn and conn.pipe and not conn.pipe:is_closing() then
+    pcall(Network.send_request, conn, "session/cancel", { session_id = conn.session_id })
+  end
 end
 
 local function handle_action_at_cursor(history_bufnr, action_callback)
@@ -536,6 +629,18 @@ local function apply_buffer_config(history_bufnr, input_bufnr)
     vim.keymap.set("n", keymaps.prev_session, function() M.cycle_session("prev") end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Prev Session Override" })
     vim.keymap.set("n", keymaps.prev_session, function() M.cycle_session("prev") end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Prev Session Override" })
   end
+
+  -- Bind cancellation keymaps elegantly based on modal design
+  if keymaps.cancel then
+    -- Universal interrupts inside Input Buffer (Insert and Normal)
+    vim.keymap.set("i", keymaps.cancel, function() handle_cancel(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "Abort agent execution" })
+    vim.keymap.set("n", keymaps.cancel, function() handle_cancel(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "Abort agent execution" })
+    -- Interrupt inside History Buffer (Normal)
+    vim.keymap.set("n", keymaps.cancel, function() handle_cancel(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "Abort agent execution" })
+  end
+
+  -- Normal mode Esc inside Input Buffer also cancels/aborts execution
+  vim.keymap.set("n", "<Esc>", function() handle_cancel(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "Abort agent execution" })
 
   -- Add local cnoreabbrevs to trap buffer commands
   local function setup_abbrevs(buf)
@@ -980,6 +1085,22 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("CodeSavantPrevSession", function()
     M.cycle_session("prev")
   end, { force = true })
+
+  -- Register graceful cleanup autocommand to prevent hanging on exit
+  local group = vim.api.nvim_create_augroup("CodeSavantCleanup", { clear = true })
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = group,
+    callback = function()
+      -- Close all active Libuv sockets to prevent handle hangs
+      local Network = require("code_savant.network")
+      for bufnr, _ in pairs(Network._connections or {}) do
+        pcall(Network.disconnect, bufnr)
+      end
+      
+      -- Terminate the background daemon job
+      pcall(M.stop_daemon)
+    end
+  })
 
   M._initialized = true
 end

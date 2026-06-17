@@ -43,6 +43,7 @@ from engine.context import (
     ChatCompressionService,
     ToolOutputTruncationService
 )
+from engine.memory import HierarchicalContextManager
 from engine.guards import ToolExecutionChain, UserConfirmationGuard
 
 
@@ -155,7 +156,7 @@ class LocalAgentExecutor:
         context_strategy: ContextStrategy,
         skill_manager: Optional[SkillManager] = None,
         agent_registry: Optional[AgentRegistry] = None,
-        context_filenames: Optional[List[str]] = None,
+        memory_manager: Optional[HierarchicalContextManager] = None,
         tool_registry: Optional[ToolRegistry] = None
     ):
         self.definition = definition
@@ -164,7 +165,7 @@ class LocalAgentExecutor:
         self.pending_hints_queue: List[str] = []
         self.skill_manager = skill_manager
         self.agent_registry = agent_registry
-        self.context_filenames = context_filenames or []
+        self.memory_manager = memory_manager
 
     async def inject_steering(self, message: str, context: ExecutionContext) -> None:
         """Appends interactive guidance steering directives into queue."""
@@ -193,7 +194,7 @@ class LocalAgentExecutor:
                 tool_registry=self.registry,
                 skill_manager=self.skill_manager,
                 agent_registry=self.agent_registry,
-                context_filenames=self.context_filenames
+                memory_manager=self.memory_manager
             ),
             history=context.session.chat_history
         )
@@ -279,7 +280,7 @@ class LocalAgentExecutor:
                 tool_registry=self.registry,
                 skill_manager=self.skill_manager,
                 agent_registry=self.agent_registry,
-                context_filenames=self.context_filenames
+                memory_manager=self.memory_manager
             ),
             strategy=self.context_strategy,
             timer=deadline_timer,
@@ -405,7 +406,7 @@ class LocalAgentExecutor:
                 tool_registry=self.registry,
                 skill_manager=self.skill_manager,
                 agent_registry=self.agent_registry,
-                context_filenames=self.context_filenames
+                memory_manager=self.memory_manager
             ),
             history=context.session.chat_history
         )

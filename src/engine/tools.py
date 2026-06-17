@@ -9,6 +9,41 @@ from pydantic import BaseModel, Field, ValidationError, JsonValue
 from engine.types import ExecutionContext
 
 
+def make_schema_gemini_compliant(schema: dict) -> dict:
+    """
+    Recursively resolves and inlines all $ref fields from $defs,
+    then strips title, additionalProperties, default, and simplifies anyOf/nullable types.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    defs = schema.pop("$defs", {}) or schema.pop("definitions", {})
+    FORBIDDEN_KEYS = {"title", "additionalProperties", "default", "examples", "example"}
+
+    def clean_node(node):
+        if isinstance(node, list):
+            return [clean_node(item) for item in node]
+        if isinstance(node, dict):
+            if "$ref" in node:
+                ref_name = node["$ref"].split("/")[-1]
+                if ref_name in defs:
+                    resolved = clean_node(defs[ref_name])
+                    sibling_keys = {k: clean_node(v) for k, v in node.items() if k != "$ref"}
+                    return {**resolved, **sibling_keys}
+            if "anyOf" in node:
+                sub_schemas = node.pop("anyOf")
+                non_null_schemas = [s for s in sub_schemas if s.get("type") != "null"]
+                if len(non_null_schemas) == 1:
+                    node.update(clean_node(non_null_schemas[0]))
+                    node["nullable"] = True
+                else:
+                    node.update(clean_node(non_null_schemas[0]))
+            return {k: clean_node(v) for k, v in node.items() if k not in FORBIDDEN_KEYS}
+        return node
+
+    return clean_node(schema)
+
+
 class BaseTool:
     """
     Interface matching legacy BaseDeclarativeTool.
@@ -23,11 +58,8 @@ class BaseTool:
         # Pre-compile and cache schema for high compile-time performance
         schema = {}
         if self.args_schema:
-            schema = self.args_schema.model_json_schema()
-            schema.pop("title", None)
-            if "properties" in schema:
-                for prop in schema["properties"].values():
-                    prop.pop("title", None)
+            raw_schema = self.args_schema.model_json_schema()
+            schema = make_schema_gemini_compliant(raw_schema)
         self._cached_parameters = schema or {"type": "object", "properties": {}}
 
     def resolve_path(self, path_str: str, workspace_path: Path) -> Path:

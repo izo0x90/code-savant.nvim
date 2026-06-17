@@ -130,12 +130,32 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
       end
     end
 
-    -- 6. Format collapsed line marker
-    local display_text = UI.CONSTANTS.GLYPH_COLLAPSED .. title
+    -- 6. Format collapsed line marker dynamically based on block_type
+    local prefix = "▶ Thought: "
+    local hl_group = "Comment"
+
+    if block_type == "warning" then
+      prefix = "▶ Warning: "
+      hl_group = "DiagnosticWarn"
+    elseif block_type == "steering" then
+      prefix = "▶ Steering: "
+      hl_group = "Identifier"
+    elseif block_type == "error" then
+      prefix = "▶ Error: "
+      hl_group = "DiagnosticError"
+    elseif block_type == "confirmation" then
+      prefix = "▶ Approve/Decline: "
+      hl_group = "DiagnosticWarn"
+    elseif block_type == "tool" then
+      prefix = "▶ Tool: "
+      hl_group = "Special"
+    end
+
+    local display_text = prefix .. title
 
     -- 7. Anchor extmark with virtual text using overlay position
     extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, target_row, 0, {
-      virt_text = { { display_text, UI.CONSTANTS.HIGHLIGHT_GROUP_COLLAPSED } },
+      virt_text = { { display_text, hl_group } },
       virt_text_pos = "overlay",
     })
 
@@ -197,9 +217,29 @@ function UI:_expand_inplace_impl(opts)
     pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, cached.extmark_id)
 
     -- 7. Anchor new expanded tracking extmark at the top of the block with indicator above it as a virtual line
-    local indicator = "▼ Thought: " .. cached.title
+    local prefix = "▼ Thought: "
+    local hl_group = "Comment"
+
+    if cached.type == "warning" then
+      prefix = "▼ Warning: "
+      hl_group = "DiagnosticWarn"
+    elseif cached.type == "steering" then
+      prefix = "▼ Steering: "
+      hl_group = "Identifier"
+    elseif cached.type == "error" then
+      prefix = "▼ Error: "
+      hl_group = "DiagnosticError"
+    elseif cached.type == "confirmation" then
+      prefix = "▼ Approve/Decline: "
+      hl_group = "DiagnosticWarn"
+    elseif cached.type == "tool" then
+      prefix = "▼ Tool: "
+      hl_group = "Special"
+    end
+
+    local indicator = prefix .. cached.title
     local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, row, 0, {
-      virt_lines = { { { indicator, "Comment" } } },
+      virt_lines = { { { indicator, hl_group } } },
       virt_lines_above = true,
     })
 

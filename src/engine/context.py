@@ -8,7 +8,7 @@ import json
 import asyncio
 import aiofiles
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -17,6 +17,7 @@ from engine.skills import SkillManager
 from engine.agents import AgentRegistry
 from engine.registry import ToolRegistry
 from engine.tools import BaseTool
+from engine.memory import HierarchicalContextManager
 from engine.types import (
     ChatMessage,
     TextPart,
@@ -93,18 +94,26 @@ class ContextSourceRepository:
         tool_registry: ToolRegistry,
         skill_manager: Optional[SkillManager] = None,
         agent_registry: Optional[AgentRegistry] = None,
-        context_filenames: Optional[List[str]] = None
+        memory_manager: Optional[HierarchicalContextManager] = None
     ):
         """Strictly requires all dependencies to be injected without default fallbacks."""
         self.workspace_path = Path(workspace_path)
         self.tool_registry = tool_registry
         self.skill_manager = skill_manager
         self.agent_registry = agent_registry
-        self.context_filenames = context_filenames or []
+        self.memory_manager = memory_manager
 
     async def get_context_filenames(self) -> List[str]:
         """Returns pre-resolved context filenames resolved at bootstrap time, with zero disk checks or thread offloads."""
-        return self.context_filenames
+        if self.memory_manager:
+            return self.memory_manager.context_filenames
+        return []
+
+    async def get_hierarchical_context(self) -> str:
+        """Returns fully compiled memory context string if active."""
+        if self.memory_manager:
+            return await self.memory_manager.load_hierarchical_context()
+        return ""
 
     async def get_active_skills(self) -> List[Dict[str, Any]]:
         """Queries custom capabilities registered under the workspace."""
@@ -522,12 +531,22 @@ class DefaultAgentContextStrategy(ContextStrategy):
         environment_context = await self.loader.compile_prompt("environment_context.md", env_vars)
         environment_context += f"\n\n# Filesystem Directory Layout\n{dir_context}"
 
+        # Load and compile hierarchical user memory files
+        user_memory_section = ""
+        loaded_context_str = await context_repo.get_hierarchical_context()
+        if loaded_context_str:
+            user_memory_section = await self.loader.compile_prompt("user_memory.md", {
+                "loaded_context": loaded_context_str,
+                **system_globals
+            })
+
         parts = [
             preamble_text,
             core_mandates,
             sub_agents_section,
             agent_skills_section,
             workflow_section,
+            user_memory_section,
             operational_guidelines,
             sandbox_section,
             yolo_section,
