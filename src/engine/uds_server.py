@@ -640,6 +640,7 @@ class UdsServer:
     async def stream_session_telemetry(self, session_id: str, writer: asyncio.StreamWriter, bus: MessageBus) -> None:
         """Long-running async task that translates internal bus EventEnvelopes to outgoing JSON-RPC notification frames."""
         queue: asyncio.Queue[EventEnvelope[Any]] = asyncio.Queue()
+        accumulated_thoughts: Dict[str, str] = {}
 
         async def listener(envelope: EventEnvelope[Any]) -> None:
             await queue.put(envelope)
@@ -654,31 +655,56 @@ class UdsServer:
                 event_type = envelope.event_type
 
                 if event_type == EventType.TELEMETRY_THOUGHT:
-                    payload: TelemetryThoughtPayload = envelope.payload
+                    payload = envelope.payload
+                    if isinstance(payload, dict):
+                        text = payload.get("text", "")
+                        block_id = payload.get("message_id") or str(uuid.uuid4())
+                    else:
+                        text = getattr(payload, "text", "")
+                        block_id = getattr(payload, "message_id", None) or str(uuid.uuid4())
+                    
+                    # Accumulate progressive deltas under the unified ID
+                    accumulated_thoughts[block_id] = accumulated_thoughts.get(block_id, "") + text
+                    
                     notification = JsonRpcCodec.encode_notification(
                         method="telemetry/collapsed_block",
                         params={
                             "session_id": session_id,
-                            "id": str(uuid.uuid4()),
+                            "id": block_id,
                             "type": "thought",
                             "title": "Thinking...",
-                            "full_content": payload.text
+                            "full_content": accumulated_thoughts[block_id]
                         }
                     )
                     writer.write(notification)
                     await writer.drain()
 
                 elif event_type == EventType.TOOL_CONFIRMATION_REQUEST:
-                    payload: ToolConfirmationRequestPayload = envelope.payload
-                    tc = payload.toolCall
-                    args_str = json.dumps(tc.args, indent=2) if tc.args else ""
+                    payload = envelope.payload
+                    if isinstance(payload, dict):
+                        tc = payload.get("tool_call") or payload.get("toolCall", payload)
+                        if isinstance(tc, dict):
+                            tc_id = tc.get("id")
+                            tc_name = tc.get("name")
+                            tc_args = tc.get("args", {})
+                        else:
+                            tc_id = tc.id
+                            tc_name = tc.name
+                            tc_args = tc.args
+                    else:
+                        tc = payload.tool_call
+                        tc_id = tc.id
+                        tc_name = tc.name
+                        tc_args = tc.args
+
+                    args_str = json.dumps(tc_args, indent=2) if tc_args else ""
                     notification = JsonRpcCodec.encode_notification(
                         method="telemetry/collapsed_block",
                         params={
                             "session_id": session_id,
-                            "id": tc.id,
+                            "id": tc_id,
                             "type": "confirmation",
-                            "title": f"⚠️ Authorization Required: Invoke tool {tc.name}",
+                            "title": f"⚠️ Authorization Required: Invoke tool {tc_name}",
                             "full_content": f"Arguments:\n{args_str}\n\nPress 'a' to Approve or 'd' to Decline."
                         }
                     )

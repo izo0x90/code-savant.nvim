@@ -19,7 +19,7 @@ class ModelRegistryError(Exception):
 
 class ToolRegistry:
     """
-    Replicates ToolRegistry (Lines 312054-312127).
+    Core ToolRegistry manager class.
     Deals with tool lookup, filtering, parent cloning, wildcard mapping ('*'),
     and provides a lightweight integration of MCP servers using the python mcp library.
     """

@@ -330,22 +330,3 @@ class EventEnvelope(BaseModel, Generic[T]):
     correlation_id: Optional[str] = None
     timestamp: float = Field(default_factory=time.time)
 
-    def to_dict(self) -> Dict[str, Any]:
-        """
-        Converts the envelope to a raw dictionary for backward compatibility with legacy dictionary listeners.
-        """
-        res = self.model_dump(mode="json")
-        res["type"] = res.pop("event_type")
-        
-        # Backward compatibility aliases
-        if "correlation_id" in res:
-            res["correlationId"] = res["correlation_id"]
-        if "tool_call" in res:
-            res["toolCall"] = res["tool_call"]
-
-        p_dict = res.get("payload")
-        if isinstance(p_dict, dict):
-            for k, v in p_dict.items():
-                res.setdefault(k, v)
-        return res
-

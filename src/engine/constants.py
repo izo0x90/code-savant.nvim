@@ -1,5 +1,5 @@
 """
-Centralized shared constants for the Agent Replica.
+Centralized shared constants for the Agent Engine.
 Eliminates magic values and string literals across engine files.
 """
 
@@ -25,7 +25,7 @@ STATUS_STOP: str = "stop"
 
 # Default fallback configurations
 DEFAULT_PLATFORM: str = "mac"
-DEFAULT_MODEL_NAME: str = "gemini-2.5-pro"
+DEFAULT_MODEL_NAME: str = "default-model"
 DEFAULT_SOCKET_PATH: str = "/tmp/code_savant.sock"
 
 DEFAULT_SESSION_NAME: str = "Untitled Session"

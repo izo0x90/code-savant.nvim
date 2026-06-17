@@ -3,7 +3,7 @@ import asyncio
 
 class DeadlineTimer:
     """
-    Asynchronous pausable DeadlineTimer (chunk-DN4XSYRG.js Lines 312359-312365).
+    Asynchronous pausable DeadlineTimer.
     Tracks the execution budget, pausing automatically during manual interactive stages
     such as tool confirmation approvals.
     """

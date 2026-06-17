@@ -158,7 +158,7 @@ class HierarchicalContextManager:
 
     async def load_hierarchical_context(self) -> str:
         """
-        Discovers, loads, and formats hierarchical context files (e.g. GEMINI.md)
+        Discovers, loads, and formats hierarchical context files
         from global and workspace pathways, inlining imports.
         """
         # 1. Global context paths

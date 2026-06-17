@@ -95,7 +95,7 @@ class UserConfirmationGuard(ToolExecutionGuard):
             ))
             self.timer.pause()
             
-            confirm_payload = EventEnvelope(
+            request_envelope = EventEnvelope(
                 event_type=EventType.TOOL_CONFIRMATION_REQUEST,
                 payload=ToolConfirmationRequestPayload(
                     tool_call=ToolCallSpec(
@@ -106,16 +106,16 @@ class UserConfirmationGuard(ToolExecutionGuard):
                 ),
                 sender=context.message_bus.name,
                 correlation_id=self.call_id
-            ).to_dict()
+            )
             
-            response = await context.message_bus.request(
-                confirm_payload,
+            response_envelope = await context.message_bus.request(
+                request_envelope,
                 EventType.TOOL_CONFIRMATION_RESPONSE.value,
                 DEFAULT_REQUEST_TIMEOUT
             )
             self.timer.resume()
 
-            if not response.get("confirmed", False):
+            if not response_envelope.payload.confirmed:
                 await context.message_bus.publish(EventEnvelope(
                     event_type=EventType.TELEMETRY_ACTIVITY,
                     payload=TelemetryActivityPayload(

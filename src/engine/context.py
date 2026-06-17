@@ -336,7 +336,7 @@ class ContextStrategy(ABC):
 
 class DefaultAgentContextStrategy(ContextStrategy):
     """
-    Concrete default strategy replicating the original JS/TS CLI agent behavior.
+    Concrete default strategy implementing standard agent behaviors.
     Dynamically loads and compiles modular markdown prompt templates with zero side-effects.
     """
 
@@ -404,7 +404,7 @@ class DefaultAgentContextStrategy(ContextStrategy):
         if len(filenames) > 1:
             formatted_filenames = ", ".join(f"`{f}`" for f in filenames[:-1]) + f" or `{filenames[-1]}`"
         else:
-            formatted_filenames = f"`{filenames[0]}`" if filenames else "`GEMINI.md`"
+            formatted_filenames = f"`{filenames[0]}`" if filenames else "`context.md`"
 
         has_hier_mem = inputs.has_hierarchical_memory
         if has_hier_mem is None:

@@ -199,13 +199,16 @@ class LocalAgentExecutor:
             history=context.session.chat_history
         )
 
+        async def _client_agent_id() -> str:
+            return f"agent-{self.definition.name}"
+
         async for chunk in context.client.generate_response_stream(
             system_prompt=request_context.system_instruction,
             chat_history=request_context.contents,
             tools_declarations=request_context.tools,
             agent_name=self.definition.name,
             turn_counter=turn_counter,
-            agent_id=f"replica-{self.definition.name}"
+            agent_id=f"agent-{self.definition.name}"
         ):
             yield chunk
 
@@ -217,8 +220,11 @@ class LocalAgentExecutor:
         context: ExecutionContext
     ) -> TurnOutcome:
         """Orchestrates single turn execution context compile, model generate, and scheduling."""
-        prompt_id = f"replica-{self.definition.name}#{turn_counter}"
+        prompt_id = f"agent-{self.definition.name}#{turn_counter}"
         
+        import uuid
+        model_message_id = str(uuid.uuid7())
+
         await context.message_bus.publish(EventEnvelope(
             event_type=EventType.TELEMETRY_ACTIVITY,
             payload=TelemetryActivityPayload(
@@ -239,7 +245,7 @@ class LocalAgentExecutor:
             if isinstance(chunk, ThoughtChunk):
                 await context.message_bus.publish(EventEnvelope(
                     event_type=EventType.TELEMETRY_THOUGHT,
-                    payload=TelemetryThoughtPayload(text=chunk.text),
+                    payload=TelemetryThoughtPayload(text=chunk.text, message_id=model_message_id),
                     sender=context.message_bus.name
                 ))
             elif isinstance(chunk, CompletionChunk):
@@ -264,6 +270,7 @@ class LocalAgentExecutor:
             )
 
         model_msg = ChatMessage(
+            id=model_message_id,
             role=MessageRole.MODEL.value,
             parts=[
                 FunctionCallPart(name=f.name, args=f.args, id=f.id)
@@ -439,10 +446,18 @@ class LocalAgentExecutor:
                 turn_counter += 1
 
                 if turn_result.status == LoopStatus.STATUS_STOP.value:
-                    terminate_reason = turn_result.terminate_reason or TerminationReason.REASON_ERROR.value
-                    if turn_result.final_result:
-                        final_result = turn_result.final_result
-                    break
+                    if self.pending_hints_queue:
+                        # User has injected manual steering: intercept the stop and force-continue the loop!
+                        turn_result = TurnOutcome(
+                            status=LoopStatus.STATUS_CONTINUE.value,
+                            terminate_reason=None,
+                            next_message=turn_result.next_message
+                        )
+                    else:
+                        terminate_reason = turn_result.terminate_reason or TerminationReason.REASON_ERROR.value
+                        if turn_result.final_result:
+                            final_result = turn_result.final_result
+                        break
 
                 current_message = turn_result.next_message
 

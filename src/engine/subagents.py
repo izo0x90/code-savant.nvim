@@ -18,7 +18,7 @@ class AgentArgs(BaseModel):
 
 class AgentTool(BaseTool):
     """
-    Asynchronous Subagent delegation tool ('agent') (chunk-DN4XSYRG.js Lines 315760-315825).
+    Asynchronous Subagent delegation tool ('agent').
     Allows launching nested async subagent executables.
     """
 
