@@ -49,3 +49,9 @@ KEY_DELTA_TRUNCATE_TO: str = "truncate_to"
 
 # Default request timeout
 DEFAULT_REQUEST_TIMEOUT: float = 60.0
+
+# Telemetry defaults
+FALLBACK_THOUGHT_TITLE: str = "Thinking..."
+
+# Default directory layout limits
+DEFAULT_DIR_CUTOFF_LIMIT: int = 200

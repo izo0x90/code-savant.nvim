@@ -4,7 +4,25 @@
   "small_model": null,
   "context_filenames": ["GEMINI.md"],
   "global_context_dir": "~/.gemini",
+  "session_storage_dir": ".code_savant/sessions",
   "requires_approval": true,
+  "strategy_config": {
+    "default": {
+      "compression_threshold": 0.60,
+      "dir_cutoff_limit": 200,
+      "ignored_directories": [
+        ".git",
+        "node_modules",
+        ".venv",
+        "__pycache__",
+        "dist",
+        "build",
+        ".pytest_cache",
+        ".replica_sessions",
+        ".code_savant"
+      ]
+    }
+  },
   "providers": {
     "google": {
       "api_key_env_var": "GEMINI_API_KEY",

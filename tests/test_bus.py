@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 import pytest
 from typing import Any
 from engine.bus import MessageBus
@@ -7,7 +8,8 @@ from engine.types import (
     EventType,
     ToolConfirmationRequestPayload,
     ToolConfirmationResponsePayload,
-    ToolCallSpec
+    ToolCallSpec,
+    TelemetryThoughtPayload
 )
 
 @pytest.mark.asyncio
@@ -23,13 +25,17 @@ async def test_message_bus_publish_subscribe() -> None:
     # Publish on the bus using EventEnvelope (pure design)
     envelope = EventEnvelope(
         event_type=EventType.TELEMETRY_THOUGHT,
-        payload={"text": "Hello world!"},
+        payload=TelemetryThoughtPayload(
+            text="Hello world!",
+            block_id=uuid.uuid7(),
+            prompt_id="test-prompt-id"
+        ),
         sender="test_sender"
     )
     await bus.publish(envelope)
 
     assert len(received_events) == 1
-    assert received_events[0].payload["text"] == "Hello world!"
+    assert received_events[0].payload.text == "Hello world!"
     assert received_events[0].sender == "test_sender"
 
 
@@ -50,13 +56,17 @@ async def test_message_bus_subscriber_error_handling() -> None:
     # Publish should not raise exception but print it to stderr
     await bus.publish(EventEnvelope(
         event_type=EventType.TELEMETRY_THOUGHT,
-        payload={"text": "crash-test"},
+        payload=TelemetryThoughtPayload(
+            text="crash-test",
+            block_id=uuid.uuid7(),
+            prompt_id="test-prompt-id"
+        ),
         sender="test_sender"
     ))
 
     # Check that healthy subscriber still executed successfully
     assert len(received) == 1
-    assert received[0].payload["text"] == "crash-test"
+    assert received[0].payload.text == "crash-test"
 
 
 @pytest.mark.asyncio
@@ -80,7 +90,9 @@ async def test_message_bus_request_response() -> None:
     request_env = EventEnvelope(
         event_type=EventType.TOOL_CONFIRMATION_REQUEST,
         payload=ToolConfirmationRequestPayload(
-            tool_call=ToolCallSpec(id="1", name="foo", args={})
+            tool_call=ToolCallSpec(id="1", name="foo", args={}),
+            block_id=uuid.uuid7(),
+            prompt_id="test-prompt-id"
         ),
         sender="test_caller",
         correlation_id="test-correlation-id"
@@ -106,7 +118,9 @@ async def test_message_bus_request_timeout() -> None:
     request_env = EventEnvelope(
         event_type=EventType.TOOL_CONFIRMATION_REQUEST,
         payload=ToolConfirmationRequestPayload(
-            tool_call=ToolCallSpec(id="2", name="bar", args={})
+            tool_call=ToolCallSpec(id="2", name="bar", args={}),
+            block_id=uuid.uuid7(),
+            prompt_id="test-prompt-id"
         ),
         sender="test_caller",
         correlation_id="test-timeout-id"
@@ -136,12 +150,16 @@ async def test_message_bus_derive_hierarchy() -> None:
     # Publishing on the child bus delegates up to parent
     await child_bus.publish(EventEnvelope(
         event_type=EventType.TELEMETRY_THOUGHT,
-        payload={"text": "hello child"},
+        payload=TelemetryThoughtPayload(
+            text="hello child",
+            block_id=uuid.uuid7(),
+            prompt_id="test-prompt-id"
+        ),
         sender="child"
     ))
 
     assert len(received_parent_events) == 1
-    assert received_parent_events[0].payload["text"] == "hello child"
+    assert received_parent_events[0].payload.text == "hello child"
     assert received_parent_events[0].sender == "parent/child"
 
 
@@ -168,7 +186,9 @@ async def test_message_bus_input_validation() -> None:
     request_env_no_id = EventEnvelope(
         event_type=EventType.TOOL_CONFIRMATION_REQUEST,
         payload=ToolConfirmationRequestPayload(
-            tool_call=ToolCallSpec(id="4", name="baz", args={})
+            tool_call=ToolCallSpec(id="4", name="baz", args={}),
+            block_id=uuid.uuid7(),
+            prompt_id="test-prompt-id"
         ),
         sender="test_caller"
     )

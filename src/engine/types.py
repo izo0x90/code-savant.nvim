@@ -2,12 +2,24 @@
 Lightweight data transport classes utilizing slots=True and frozen=True for speed, memory efficiency, and runtime immutability.
 Used strictly for internal communication; Pydantic or dicts are used at serialization boundaries.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, List, Optional, Dict, Generic, TypeVar, Union, Protocol, AsyncIterator
+from typing import (
+    Any,
+    List,
+    Optional,
+    Dict,
+    Generic,
+    TypeVar,
+    Union,
+    Protocol,
+    AsyncIterator,
+    Literal,
+)
 import time
 import uuid
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, AliasChoices
@@ -19,27 +31,46 @@ T = TypeVar("T")
 # Unified Slotted & Frozen Pydantic v2 Models (Metadata & Sidecars)
 # ==============================================================================
 
+
 class SessionMetadataPayload(BaseModel):
     """Strict representation of session metadata."""
+
     model_config = ConfigDict(frozen=True, slots=True)
-    name: Optional[str] = Field(default=None, description="Name or title of the session.")
-    query: Optional[str] = Field(default=None, description="The initial user query for the session.")
-    created_at: Optional[str] = Field(default=None, description="ISO timestamp when session was created.")
-    last_updated: Optional[str] = Field(default=None, description="ISO timestamp when session was last updated.")
-    turn_count: Optional[int] = Field(default=None, description="The number of turns completed in the session.")
-    mock_mode: bool = Field(default=False, description="Whether the session is running in mock mode.")
+    name: Optional[str] = Field(
+        default=None, description="Name or title of the session."
+    )
+    query: Optional[str] = Field(
+        default=None, description="The initial user query for the session."
+    )
+    created_at: Optional[str] = Field(
+        default=None, description="ISO timestamp when session was created."
+    )
+    last_updated: Optional[str] = Field(
+        default=None, description="ISO timestamp when session was last updated."
+    )
+    turn_count: Optional[int] = Field(
+        default=None, description="The number of turns completed in the session."
+    )
+    mock_mode: bool = Field(
+        default=False, description="Whether the session is running in mock mode."
+    )
+    agent_name: Optional[str] = Field(
+        default=None, description="The explicit subagent name (captured separately!)."
+    )
 
 
 class SessionMetaSidecar(BaseModel):
     """Strict representation of companion sidecar metadata files on disk."""
+
     model_config = ConfigDict(frozen=True, slots=True)
-    session_id: str
+    session_id: uuid.UUID
     metadata: SessionMetadataPayload
     turn_count: int
 
 
 class FunctionDeclarationSpec(BaseModel):
     """Strict representation of LLM function call declaration parameters."""
+
     model_config = ConfigDict(frozen=True, slots=True)
     name: str
     description: str
@@ -68,13 +99,31 @@ class TerminationReason(str, Enum):
 
 class ExecutorAgentConfig(BaseModel):
     """Strict validated configuration model for LocalAgentExecutor."""
+
     model_config = ConfigDict(frozen=True, slots=True, populate_by_name=True)
     name: str = "agent"
-    max_turns: int = Field(default=10, validation_alias=AliasChoices("max_turns", "maxTurns"))
-    max_time_seconds: int = Field(default=60, validation_alias=AliasChoices("max_time_seconds", "maxTimeSeconds"))
-    recovery_time_seconds: int = Field(default=30, validation_alias=AliasChoices("recovery_time_seconds", "recoveryTimeSeconds"))
-    plan_mode: bool = Field(default=False, validation_alias=AliasChoices("plan_mode", "planMode", "plan_mode"))
-    requires_approval: bool = Field(default=False, validation_alias=AliasChoices("requires_approval", "requiresApproval"))
+    max_turns: int = Field(
+        default=10, validation_alias=AliasChoices("max_turns", "maxTurns")
+    )
+    max_time_seconds: int = Field(
+        default=60, validation_alias=AliasChoices("max_time_seconds", "maxTimeSeconds")
+    )
+    recovery_time_seconds: int = Field(
+        default=30,
+        validation_alias=AliasChoices("recovery_time_seconds", "recoveryTimeSeconds"),
+    )
+    plan_mode: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("plan_mode", "planMode", "plan_mode"),
+    )
+    requires_approval: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("requires_approval", "requiresApproval"),
+    )
+    compression_threshold: float = Field(
+        default=0.60,
+        validation_alias=AliasChoices("compression_threshold", "compressionThreshold"),
+    )
     query: str = "Investigate target file inside {{target_dir}}"
 
 
@@ -82,14 +131,18 @@ class ExecutorAgentConfig(BaseModel):
 # Decoupled Structural Protocols (Unidirectional, Decoupled Typings)
 # ==============================================================================
 
+
 class MessageBusProtocol(Protocol):
     async def publish(self, event: Dict[str, Any]) -> None: ...
-    async def request(self, payload: Dict[str, Any], response_type: str) -> Dict[str, Any]: ...
+    async def request(
+        self, payload: Dict[str, Any], response_type: str
+    ) -> Dict[str, Any]: ...
     def derive(self, namespace: str) -> MessageBusProtocol: ...
+
 
 class AgentSessionProtocol(Protocol):
     @property
-    def session_id(self) -> str: ...
+    def session_id(self) -> uuid.UUID: ...
     @property
     def chat_history(self) -> List[ChatMessage]: ...
     @property
@@ -97,11 +150,15 @@ class AgentSessionProtocol(Protocol):
     async def append_message(self, message: ChatMessage) -> None: ...
     async def set_history(self, history: List[ChatMessage]) -> None: ...
 
+
 class SessionManagerProtocol(Protocol):
-    async def create_sub_session(self, parent_session_id: str, agent_name: str, query: str) -> AgentSessionProtocol: ...
-    async def load_session(self, session_id: str) -> AgentSessionProtocol: ...
+    async def create_sub_session(
+        self, parent_session_id: uuid.UUID, agent_name: str, query: str
+    ) -> AgentSessionProtocol: ...
+    async def load_session(self, session_id: uuid.UUID) -> AgentSessionProtocol: ...
     async def save_session(self, session: AgentSessionProtocol) -> None: ...
     async def list_sessions(self) -> List[SessionMetaSidecar]: ...
+
 
 class GenAIClientProtocol(Protocol):
     def generate_response_stream(
@@ -111,7 +168,7 @@ class GenAIClientProtocol(Protocol):
         tools_declarations: List[FunctionDeclarationSpec],
         agent_name: str = "",
         turn_counter: int = 0,
-        agent_id: str = ""
+        agent_id: str = "",
     ) -> AsyncIterator[Any]: ...
 
 
@@ -119,60 +176,89 @@ class GenAIClientProtocol(Protocol):
 # Unified Slotted & Frozen Pydantic v2 Message Part Models
 # ==============================================================================
 
-class TextPart(BaseModel):
-    """Immutable representation of a text-based turn segment."""
+
+class ThoughtChunk(BaseModel):
+    """Reused directly as a message part in the session database!"""
+
     model_config = ConfigDict(frozen=True, slots=True)
     text: str
+    title: Optional[str] = None
+    thought: Literal[True] = True
+
+
+class TextPart(BaseModel):
+    """Immutable representation of a text-based turn segment."""
+
+    model_config = ConfigDict(frozen=True, slots=True)
+    text: str
+
 
 class FunctionCallPart(BaseModel):
     """
     Immutable representation of an LLM tool invocation request.
     Strictly type-restricted to enforce purely serializable JSON values.
     """
+
     model_config = ConfigDict(frozen=True, slots=True)
     name: str
     args: Dict[str, JsonValue]
     id: str
     thought_signature: Optional[str] = None
+
 
 class FunctionResponsePart(BaseModel):
     """
     Immutable representation of a tool execution outcome returned to the LLM.
     Guarantees zero leakage of non-serializable runtime handles.
     """
+
     model_config = ConfigDict(frozen=True, slots=True)
     name: str
     response: JsonValue
+
 
 class ToolCallPart(BaseModel):
     """
     Immutable representation of an LLM tool invocation request.
     Strictly type-restricted to enforce purely serializable JSON values.
     """
+
     model_config = ConfigDict(frozen=True, slots=True)
     name: str
     args: Dict[str, JsonValue]
     id: str
     thought_signature: Optional[str] = None
 
+
 class ToolResultPart(BaseModel):
     """
     Immutable representation of a tool execution outcome returned to the LLM.
     Guarantees zero leakage of non-serializable runtime handles.
     """
+
     model_config = ConfigDict(frozen=True, slots=True)
     name: str
     response: JsonValue
     id: Optional[str] = None
 
-MessagePart = Union[TextPart, FunctionCallPart, FunctionResponsePart, ToolCallPart, ToolResultPart]
+
+MessagePart = Union[
+    ThoughtChunk,
+    TextPart,
+    FunctionCallPart,
+    FunctionResponsePart,
+    ToolCallPart,
+    ToolResultPart,
+]
+
 
 class SessionLogRecord(BaseModel):
     """
     Immutable representation of a structured log record for a session event.
     """
+
     model_config = ConfigDict(frozen=True, slots=True)
-    session_id: str
+    session_id: uuid.UUID
     timestamp: float = Field(default_factory=time.time)
     event: str
     message: str
@@ -183,24 +269,29 @@ class SessionLogRecord(BaseModel):
 # Strict Chat Message & Execution Context
 # ==============================================================================
 
+
 class ChatMessage(BaseModel):
     """
     Immutable representation of an individual conversation turn.
     Eliminates broad, loose dictionaries inside core orchestrator logic.
     """
+
     model_config = ConfigDict(frozen=True, slots=True)
-    id: str = Field(default_factory=lambda: str(uuid.uuid7()))
+    id: uuid.UUID = Field(default_factory=uuid.uuid7)
     timestamp: float = Field(default_factory=time.time)
     role: str
     parts: List[MessagePart]
     metadata: Optional[Dict[str, Any]] = Field(default=None)
 
+
 @dataclass(slots=True, frozen=True)
 class ModelRequestContext:
     """Encapsulates all compiled model generation parameters with absolute type-safety."""
+
     system_instruction: str
     tools: List[FunctionDeclarationSpec]  # Zero Dict[str, Any] schemas!
-    contents: List[ChatMessage]          # Zero Dict[str, Any] message lists!
+    contents: List[ChatMessage]  # Zero Dict[str, Any] message lists!
+
 
 @dataclass(slots=True, frozen=True)
 class ExecutionContext:
@@ -209,6 +300,7 @@ class ExecutionContext:
     Safely propagated across executing tool chains, interceptor guards, and stateless tools.
     100% strictly typed to guarantee compile-time verification without circular imports.
     """
+
     workspace_path: Path
     message_bus: MessageBusProtocol
     remaining_depth: int
@@ -221,6 +313,7 @@ class ExecutionContext:
 # Core Orchestrator Transport Dataclasses
 # ==============================================================================
 
+
 @dataclass(slots=True, frozen=True)
 class ToolCall:
     name: str
@@ -230,7 +323,13 @@ class ToolCall:
 
 
 @dataclass(slots=True, frozen=True)
-class ThoughtChunk:
+class ParsedThought:
+    subject: str
+    description: str
+
+
+@dataclass(slots=True, frozen=True)
+class ContentChunk:
     text: str
 
 
@@ -260,10 +359,12 @@ class TurnOutcome:
 # Telemetry event enums and wrappers
 # ==============================================================================
 
+
 class EventType(str, Enum):
     TOOL_CONFIRMATION_REQUEST = "tool-confirmation-request"
     TOOL_CONFIRMATION_RESPONSE = "tool-confirmation-response"
     TELEMETRY_THOUGHT = "telemetry:thought"
+    TELEMETRY_CONTENT = "telemetry:content"
     TELEMETRY_ACTIVITY = "telemetry:activity"
 
 
@@ -285,6 +386,16 @@ class TelemetryActivityType(str, Enum):
 class TelemetryThoughtPayload(BaseModel):
     model_config = ConfigDict(frozen=True, slots=True)
     text: str
+    block_id: uuid.UUID
+    prompt_id: str
+    title: Optional[str] = None
+
+
+class TelemetryContentPayload(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    text: str
+    block_id: uuid.UUID
+    prompt_id: str
 
 
 class TelemetryActivityPayload(BaseModel):
@@ -300,6 +411,7 @@ class TelemetryActivityPayload(BaseModel):
     query: Optional[str] = None
     prompt_id: Optional[str] = None
     tool: Optional[str] = None
+    block_id: Optional[uuid.UUID] = None
 
 
 class ToolCallSpec(BaseModel):
@@ -312,6 +424,8 @@ class ToolCallSpec(BaseModel):
 class ToolConfirmationRequestPayload(BaseModel):
     model_config = ConfigDict(frozen=True, slots=True)
     tool_call: ToolCallSpec
+    block_id: uuid.UUID
+    prompt_id: str
 
 
 class ToolConfirmationResponsePayload(BaseModel):
@@ -323,6 +437,7 @@ class EventEnvelope(BaseModel, Generic[T]):
     """
     Programmatic, typed generic container wrapping event payloads with metadata.
     """
+
     model_config = ConfigDict(frozen=True, slots=True)
     event_type: EventType
     payload: T
@@ -330,3 +445,30 @@ class EventEnvelope(BaseModel, Generic[T]):
     correlation_id: Optional[str] = None
     timestamp: float = Field(default_factory=time.time)
 
+
+class JsonRpcNotification(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    jsonrpc: str = "2.0"
+    method: str
+    params: Dict[str, Any]
+
+
+class JsonRpcResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    jsonrpc: str = "2.0"
+    result: Any
+    id: Any
+
+
+class JsonRpcErrorPayload(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    code: int
+    message: str
+    data: Optional[Any] = None
+
+
+class JsonRpcErrorResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    jsonrpc: str = "2.0"
+    error: Dict[str, Any]
+    id: Any

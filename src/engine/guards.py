@@ -1,7 +1,7 @@
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 from pathlib import Path
-from engine.constants import DEFAULT_REQUEST_TIMEOUT
 
 from engine.tools import BaseTool
 from engine.types import (
@@ -76,10 +76,12 @@ class TelemetryLoggerGuard(ToolExecutionGuard):
 class UserConfirmationGuard(ToolExecutionGuard):
     """Interactive approval gate that requests user verification over the MessageBus."""
 
-    def __init__(self, timer: Any, is_interactive: bool, call_id: str):
+    def __init__(self, timer: Any, is_interactive: bool, block_id: uuid.UUID, prompt_id: str, timeout: float):
         self.timer = timer
         self.is_interactive = is_interactive
-        self.call_id = call_id
+        self.block_id = block_id
+        self.prompt_id = prompt_id
+        self.timeout = timeout
 
     async def before_execute(self, tool_name: str, args: Dict[str, Any], context: ExecutionContext) -> bool:
         # Pause execution and check user consent for destructive/structural tools
@@ -89,7 +91,9 @@ class UserConfirmationGuard(ToolExecutionGuard):
                 payload=TelemetryActivityPayload(
                     activity_type=TelemetryActivityType.AWAITING_APPROVAL,
                     msg="Suspending budget countdown for user verification...",
-                    tool=tool_name
+                    tool=tool_name,
+                    prompt_id=self.prompt_id,
+                    block_id=self.block_id
                 ),
                 sender=context.message_bus.name
             ))
@@ -99,19 +103,21 @@ class UserConfirmationGuard(ToolExecutionGuard):
                 event_type=EventType.TOOL_CONFIRMATION_REQUEST,
                 payload=ToolConfirmationRequestPayload(
                     tool_call=ToolCallSpec(
-                        id=self.call_id,
+                        id=str(self.block_id),
                         name=tool_name,
                         args=args
-                    )
+                    ),
+                    block_id=self.block_id,
+                    prompt_id=self.prompt_id
                 ),
                 sender=context.message_bus.name,
-                correlation_id=self.call_id
+                correlation_id=str(self.block_id)
             )
             
             response_envelope = await context.message_bus.request(
                 request_envelope,
                 EventType.TOOL_CONFIRMATION_RESPONSE.value,
-                DEFAULT_REQUEST_TIMEOUT
+                self.timeout
             )
             self.timer.resume()
 
@@ -121,7 +127,9 @@ class UserConfirmationGuard(ToolExecutionGuard):
                     payload=TelemetryActivityPayload(
                         activity_type=TelemetryActivityType.APPROVAL_DENIED,
                         msg="User declined tool execution request.",
-                        tool=tool_name
+                        tool=tool_name,
+                        prompt_id=self.prompt_id,
+                        block_id=self.block_id
                     ),
                     sender=context.message_bus.name
                 ))

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import uuid
 import shutil
 import pytest
 from pathlib import Path
@@ -92,7 +93,7 @@ maxTimeSeconds: 30
             approval_mode="plan"
         )
         plan_session = AgentSession(
-            session_id="test-plan-sess",
+            session_id=uuid.uuid7(),
             chat_history=[],
             metadata=SessionMetadataPayload()
         )
@@ -113,7 +114,7 @@ maxTimeSeconds: 30
             approval_mode="yolo"
         )
         yolo_session = AgentSession(
-            session_id="test-yolo-sess",
+            session_id=uuid.uuid7(),
             chat_history=[],
             metadata=SessionMetadataPayload()
         )

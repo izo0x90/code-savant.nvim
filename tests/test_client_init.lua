@@ -146,9 +146,62 @@ code_savant.ensure_daemon_running(function(success)
           test_failed = true
         else
           print("Test 5 Passed!")
-          print("ALL TESTS PASSED SUCCESSFULLY!")
+          
+          -- Test 6: Verification of daemon launch with performance debugging option
+          print("Test 6: Verification of daemon launch with performance debugging...")
+          local perf_socket = "/tmp/test_savant_perf.sock"
+          local trace_file = ".code_savant/test_perf_trace.json"
+          
+          -- Delete pre-existing trace file to make test deterministic
+          os.remove(trace_file)
+          
+          code_savant.config.socket_path = perf_socket
+          code_savant.config.perf_debug = true
+          code_savant.config.perf_trace_file = trace_file
+          
+          code_savant.ensure_daemon_running(function(perf_success)
+            if not perf_success then
+              print("FAIL: Failed to start and verify running daemon on socket under performance mode: " .. perf_socket)
+              test_failed = true
+              test_completed = true
+              return
+            end
+            
+            print("Performance daemon is verified as running!")
+            
+            print("Stopping performance daemon...")
+            code_savant.stop_daemon()
+            
+            -- Wait briefly for daemon stop and check trace file exists
+            local check_timer2 = uv.new_timer()
+            uv.timer_start(check_timer2, 2000, 0, function()
+              uv.close(check_timer2)
+              code_savant.is_daemon_running(function(perf_running)
+                if perf_running then
+                  print("FAIL: Performance daemon is still running after stop_daemon was invoked.")
+                  test_failed = true
+                else
+                  local f = io.open(trace_file, "r")
+                  if not f then
+                    print("FAIL: Expected trace file '" .. trace_file .. "' was not created.")
+                    test_failed = true
+                  else
+                    local size = f:seek("end")
+                    f:close()
+                    if size <= 0 then
+                      print("FAIL: Generated trace file is empty.")
+                      test_failed = true
+                    else
+                      print("Test 6 Passed!")
+                      print("ALL TESTS PASSED SUCCESSFULLY!")
+                    end
+                  end
+                end
+                test_completed = true
+              end)
+            end)
+          end)
         end
-        test_completed = true
       end)
     end)
   end)

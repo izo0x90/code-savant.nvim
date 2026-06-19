@@ -70,6 +70,7 @@ class AgentTool(BaseTool):
             max_time_seconds=profile.get("max_time_seconds", profile.get("maxTimeSeconds", 60)),
             plan_mode=profile.get("plan_mode", profile.get("planMode", False)),
             requires_approval=profile.get("requires_approval", profile.get("requiresApproval", False)),
+            compression_threshold=profile.get("compression_threshold", profile.get("compressionThreshold", 0.60)),
             query=args.prompt
         )
         

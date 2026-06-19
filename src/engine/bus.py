@@ -2,9 +2,8 @@ import asyncio
 import uuid
 import sys
 import traceback
-import time
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple, Union
-from engine.types import EventEnvelope, EventType
+from engine.types import EventEnvelope
 
 # Type alias for asynchronous event listeners
 AsyncListener = Callable[[EventEnvelope[Any]], Coroutine[Any, Any, None]]

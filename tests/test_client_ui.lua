@@ -182,6 +182,49 @@ local function run_tests()
   local post_edit_ok = pcall(vim.api.nvim_buf_set_lines, test_buf, 0, -1, false, { "Malicious user edit" })
   assert(not post_edit_ok, "User edits should still fail after programmatic update")
 
+  -- 6.2 Test Native Animated Spinner Loader
+  print("DEBUG: Step 6.2 - Native Animated Spinner Loader")
+  local spin_buf = ui:create_chat_buffer()
+  ui:run_programmatic_update(spin_buf, function()
+    vim.api.nvim_buf_set_lines(spin_buf, 0, -1, false, { "◀   CodeSavant is thinking..." })
+  end)
+
+  -- Start thinking spinner
+  ui:start_spinner(spin_buf, "thinking", {
+    type = "braille",
+    use_extmark = true,
+    col = 4,
+    row = 0,
+    format_fn = function(s) return { { s, "Special" } } end
+  })
+
+  local registry_key = spin_buf .. ":thinking"
+  local inst = ui.animation_wheel.registry[registry_key]
+  assert(inst ~= nil, "Spinner instance should be registered")
+  assert_eq(inst.key, "thinking", "Registered spinner key should match")
+  assert_eq(inst.use_extmark, true, "Should be virtual text overlay spinner")
+  assert_eq(inst.col, 4, "Should have column offset 4")
+  assert(ui.animation_wheel.timer ~= nil, "Global timer wheel should be running")
+
+  -- Stop thinking spinner
+  ui:stop_spinner(spin_buf, "thinking")
+  assert(ui.animation_wheel.registry[registry_key] == nil, "Spinner instance should be unregistered")
+
+  -- Start a custom spinner
+  ui:start_spinner(spin_buf, "custom_spin", {
+    type = "custom",
+    custom_frames = { "A", "B", "C" },
+    use_extmark = true,
+    col = 0,
+    row = 0,
+    format_fn = function(s) return { { "Custom: " .. s, "Comment" } } end
+  })
+  local custom_inst = ui.animation_wheel.registry[spin_buf .. ":custom_spin"]
+  assert(custom_inst ~= nil, "Custom spinner should be registered")
+  assert_eq(custom_inst.frames[1], "A", "Custom frame 1 should match")
+
+  ui:stop_spinner(spin_buf, "custom_spin")
+
   -- 7. Test teardown / clean cleanup
   print("DEBUG: Step 7 - Teardown")
   ui:teardown()

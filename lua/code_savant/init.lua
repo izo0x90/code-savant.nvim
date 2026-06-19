@@ -4,6 +4,8 @@
 --- @field bootstrap_in_progress boolean
 --- @field daemon_job_id integer|nil
 local M = {}
+M._has_render_markdown = false
+M._render_markdown_api = nil
 
 local Network = require("code_savant.network")
 local UI = require("code_savant.ui").get_instance()
@@ -19,11 +21,34 @@ local CONSTANTS = {
   DEFAULT_SOCKET_PATH = "/tmp/code_savant.sock",
 }
 
+local function get_render_markdown()
+  if M._has_render_markdown then
+    return M._render_markdown_api
+  end
+  local ok, rm = pcall(require, "render-markdown")
+  if ok then
+    M._has_render_markdown = true
+    M._render_markdown_api = rm
+    return rm
+  end
+  return nil
+end
+
 --- Default Preferences
 --- Adheres to Guideline 3: Top-level default configurations.
 local DEFAULT_CONFIG = {
   socket_path = CONSTANTS.DEFAULT_SOCKET_PATH,
   spawn_split = "vsplit", -- Options: "vsplit" (vertical), "split" (horizontal), "tabnew" (new tab), "edit" (current window)
+  perf_debug = false, -- Options: true to run under viztracer, false for standard execution
+  perf_trace_file = ".code_savant/perf_trace.json", -- Target location for the visualization report
+  integrations = {
+    render_markdown = "auto", -- Options: "auto" (detects & auto-manages), "on" (forces), "off" (disabled)
+  },
+  spinner = {
+    type = "equalizer", -- Options: "braille", "clock", "circle", "equalizer", "shade", "ellipsis", "retro", "custom"
+    custom_frames = nil,
+    interval = 100,
+  },
   keymaps = {
     expand = "<CR>",  -- Key to expand collapsed virtual thought blocks
     submit = "<CR>",  -- Key to submit prompt lines at the bottom of the buffer
@@ -34,6 +59,7 @@ local DEFAULT_CONFIG = {
     cancel = "<C-c>",       -- Key to cancel/abort outstanding agent runs
     approve = "a",          -- Key to approve tool confirmation requests
     decline = "d",          -- Key to decline tool confirmation requests
+    toggle_render = "<leader>mr", -- Key to manually toggle render-markdown inside chat windows
   }
 }
 
@@ -150,9 +176,34 @@ function M.start_daemon()
   end
 
   local socket_path = M.config.socket_path or CONSTANTS.DEFAULT_SOCKET_PATH
+  local is_perf = M.config.perf_debug or false
+  if is_perf == nil then is_perf = false end
+
+  if is_perf then
+    local test_cmd = { python_bin, "-c", "import viztracer" }
+    vim.fn.system(test_cmd)
+    if vim.v.shell_error ~= 0 then
+      error("[CodeSavant Error] Performance debugging is enabled ('perf_debug = true'), but 'viztracer' is not installed in the virtual environment.\n" ..
+            "Please run 'uv sync' in your terminal to install development dependencies.")
+    end
+  end
+
   -- Run as package module to avoid shadow types.py collision with Python standard library
   -- Note: Do NOT use "--server" as it is an unrecognized argument and causes the daemon to crash (argparse error).
-  local cmd = { python_bin, "-m", "engine.main", "--socket-path", socket_path }
+  local cmd
+  if is_perf then
+    local trace_file = M.config.perf_trace_file or ".code_savant/perf_trace.json"
+    if not (trace_file:sub(1, 1) == "/" or trace_file:sub(2, 2) == ":") then
+      trace_file = plugin_root .. "/" .. trace_file
+    end
+    local trace_dir = vim.fs.dirname(trace_file)
+    if trace_dir and trace_dir ~= "." and vim.fn.isdirectory(trace_dir) == 0 then
+      vim.fn.mkdir(trace_dir, "p")
+    end
+    cmd = { python_bin, "-m", "viztracer", "--log_async", "--exclude_files", ".venv/", "-o", trace_file, "-m", "engine.main", "--socket-path", socket_path }
+  else
+    cmd = { python_bin, "-m", "engine.main", "--socket-path", socket_path }
+  end
 
   M._daemon_stderr_chunks = {}
 
@@ -261,7 +312,7 @@ end
 local function find_thinking_line(bufnr)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   for i, line in ipairs(lines) do
-    if line:find("◀ CodeSavant is thinking...", 1, true) then
+    if line:find("CodeSavant is thinking...", 1, true) then
       return i - 1 -- 0-indexed row
     end
   end
@@ -272,7 +323,19 @@ end
 --- and registers network handlers.
 --- @param bufnr integer
 --- @param mock_mode? boolean Optional mock mode flag
-function M.start_chat_session(bufnr, mock_mode)
+function M.start_chat_session(bufnr, mock_mode, session_id)
+  -- Programmatically register our custom filetype with render-markdown active state if present
+  if get_render_markdown() then
+    local state_ok, state = pcall(require, "render-markdown.state")
+    if state_ok and state and state.file_types then
+      if not vim.tbl_contains(state.file_types, CONSTANTS.FILETYPE) then
+        table.insert(state.file_types, CONSTANTS.FILETYPE)
+        -- Re-trigger FileType autocommands so render-markdown hooks our buffer
+        pcall(vim.api.nvim_exec_autocmds, "FileType", { buffer = bufnr })
+      end
+    end
+  end
+
   M.ensure_daemon_running(function(success, err_msg)
     if not success then
       vim.schedule(function()
@@ -283,7 +346,7 @@ function M.start_chat_session(bufnr, mock_mode)
 
     -- Connect over socket pipe and initiate session
     local socket_path = M.config.socket_path or CONSTANTS.DEFAULT_SOCKET_PATH
-    Network.connect(socket_path, bufnr, vim.fn.getcwd(), mock_mode)
+    Network.connect(socket_path, bufnr, vim.fn.getcwd(), mock_mode, session_id)
     
     -- Register incoming message stream handler (JSON-RPC listener)
     Network.add_listener(bufnr, function(parsed)
@@ -299,6 +362,7 @@ function M.start_chat_session(bufnr, mock_mode)
         UI:run_programmatic_update(bufnr, function()
           -- Handle daemon/executor error frames cleanly
           if parsed.error then
+            UI:stop_spinner(bufnr, "thinking")
             local daemon_err_msg = string.format("[CodeSavant Daemon Error] %s (Code: %s)",
               tostring(parsed.error.message or "Unknown Error"), tostring(parsed.error.code or "nil"))
             if parsed.error.data then
@@ -314,21 +378,79 @@ function M.start_chat_session(bufnr, mock_mode)
             return
           end
 
+          -- Handle historical chat history loading
+          if parsed.result and parsed.result.chat_history then
+            local chat_history = parsed.result.chat_history
+            local formatted_lines = {}
+            for _, msg in ipairs(chat_history) do
+              local role = msg.role
+              if msg.parts and #msg.parts > 0 then
+                if #formatted_lines > 0 then
+                  table.insert(formatted_lines, "") -- separator
+                end
+
+                if role == "user" then
+                  table.insert(formatted_lines, "User:")
+                  for _, part in ipairs(msg.parts) do
+                    if part.text then
+                      local msg_lines = vim.split(part.text, "\n", { plain = true })
+                      for _, line in ipairs(msg_lines) do
+                        table.insert(formatted_lines, "  " .. line)
+                      end
+                    end
+                  end
+                elseif role == "model" then
+                  for _, part in ipairs(msg.parts) do
+                    if part.thought then
+                      table.insert(formatted_lines, "<details>")
+                      table.insert(formatted_lines, "<summary>Thinking...</summary>")
+                      table.insert(formatted_lines, "")
+                      local thought_lines = vim.split(part.text, "\n", { plain = true })
+                      for _, line in ipairs(thought_lines) do
+                        table.insert(formatted_lines, line)
+                      end
+                      table.insert(formatted_lines, "")
+                      table.insert(formatted_lines, "</details>")
+                    elseif part.text then
+                      local content_lines = vim.split(part.text, "\n", { plain = true })
+                      for _, line in ipairs(content_lines) do
+                        table.insert(formatted_lines, line)
+                      end
+                    end
+                  end
+                end
+              end
+            end
+
+            if #formatted_lines > 0 then
+              vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, formatted_lines)
+            end
+          end
+
           -- Match incoming server notifications
           if parsed.method == "telemetry/collapsed_block" then
             local params = parsed.params or {}
-            local thinking_row = find_thinking_line(bufnr)
+            local cached_block = UI.collapsed_blocks_cache[params.id]
             local target_row
-            if thinking_row then
-              -- Shifting thinking indicator down by inserting an empty line at its row,
-              -- and anchoring the collapsed block extmark on the newly inserted row.
-              vim.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row, false, { "" })
-              target_row = thinking_row
+
+            if not cached_block then
+              -- This is a brand NEW block! We must find a row for it and insert exactly one empty line.
+              local thinking_row = find_thinking_line(bufnr)
+              if thinking_row then
+                -- Shifting thinking indicator down by inserting an empty line at its row,
+                -- and anchoring the collapsed block extmark on the newly inserted row.
+                vim.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row, false, { "" })
+                target_row = thinking_row
+              else
+                local line_count = vim.api.nvim_buf_line_count(bufnr)
+                target_row = math.max(0, line_count - 1)
+                vim.api.nvim_buf_set_lines(bufnr, target_row, target_row, false, { "" })
+              end
             else
-              local line_count = vim.api.nvim_buf_line_count(bufnr)
-              target_row = math.max(0, line_count - 1)
-              vim.api.nvim_buf_set_lines(bufnr, target_row, target_row, false, { "" })
+              -- This is an update to an existing block! Retain its previous row.
+              target_row = cached_block.row
             end
+
             UI:on_collapsed_block(params.id, params.type, params.title, params.full_content, bufnr, target_row)
 
             -- Bind buffer-local shortcuts if this is an interactive tool confirmation request
@@ -337,11 +459,19 @@ function M.start_chat_session(bufnr, mock_mode)
               local keymaps = M.config.keymaps or DEFAULT_CONFIG.keymaps
               local function respond(confirmed)
                 -- Send the decision back to the daemon
-                pcall(Network.send_request, bufnr, "session/respond_confirmation", {
-                  session_id = params.session_id,
-                  id = params.id,
-                  confirmed = confirmed
-                })
+                local conn = Network.get_connection(bufnr)
+                if conn then
+                  local ok, err = pcall(Network.send_request, conn, "session/respond_confirmation", {
+                    session_id = params.session_id,
+                    id = params.id,
+                    confirmed = confirmed
+                  })
+                  if not ok then
+                    vim.notify("[CodeSavant Error] Failed to send tool confirmation response: " .. tostring(err), vim.log.levels.ERROR)
+                  end
+                else
+                  vim.notify("[CodeSavant Error] Failed to send tool confirmation: No active connection found for buffer " .. tostring(bufnr), vim.log.levels.ERROR)
+                end
                 -- Delete the mapping to make it single-use
                 pcall(vim.keymap.del, "n", keymaps.approve, { buffer = bufnr })
                 pcall(vim.keymap.del, "n", keymaps.decline, { buffer = bufnr })
@@ -389,6 +519,8 @@ function M.start_chat_session(bufnr, mock_mode)
               local lines = vim.split(text, "\n", { plain = true })
               local thinking_row = find_thinking_line(bufnr)
               if thinking_row then
+                -- Stop the thinking spinner immediately so it doesn't overwrite our streamed lines!
+                UI:stop_spinner(bufnr, "thinking")
                 -- Replace the thinking indicator line with final text chunk
                 vim.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row + 1, false, lines)
               else
@@ -401,7 +533,9 @@ function M.start_chat_session(bufnr, mock_mode)
           elseif parsed.method == "telemetry/status" then
             local params = parsed.params or {}
             vim.b[bufnr].status = params.status
+
             if params.status == "idle" then
+              UI:stop_spinner(bufnr, "thinking")
               local thinking_row = find_thinking_line(bufnr)
               if thinking_row then
                 -- Safely wipe any remaining thinking text placeholder on completion
@@ -475,10 +609,13 @@ local function handle_enter(input_bufnr)
     vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {})
 
     -- Send steering request
-    pcall(Network.send_request, conn, "session/inject_steering", {
+    local ok, err = pcall(Network.send_request, conn, "session/inject_steering", {
       session_id = conn.session_id,
       text = prompt_text
     })
+    if not ok then
+      vim.notify("[CodeSavant Error] Failed to inject steering directive: " .. tostring(err), vim.log.levels.ERROR)
+    end
     return
   end
 
@@ -493,7 +630,7 @@ local function handle_enter(input_bufnr)
       table.insert(to_append, "  " .. line)
     end
     table.insert(to_append, "")
-    table.insert(to_append, "◀ CodeSavant is thinking...")
+    table.insert(to_append, "◀   CodeSavant is thinking...")
     table.insert(to_append, "")
 
     local insert_start = (line_count == 1 and vim.api.nvim_buf_get_lines(history_bufnr, 0, 1, false)[1] == "") and 0 or line_count
@@ -508,6 +645,20 @@ local function handle_enter(input_bufnr)
     end
   end)
 
+  -- Kick off the animated spinner loader
+  local spinner_opt = M.config.spinner or {}
+  UI:start_spinner(history_bufnr, "thinking", {
+    type = spinner_opt.type,
+    custom_frames = spinner_opt.custom_frames,
+    interval = spinner_opt.interval,
+    use_extmark = true, -- Massively efficient virtual text overlay!
+    col = 4,            -- Position the spinner directly over the Space 2 gap
+    row = function() return find_thinking_line(history_bufnr) end,
+    format_fn = function(symbol)
+      return { { symbol, "Special" } } -- Color the rotating spinner beautifully!
+    end,
+  })
+
   -- Clear input buffer
   vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {})
 
@@ -517,9 +668,13 @@ end
 
 local function handle_cancel(bufnr)
   local history_bufnr = vim.b[bufnr].partner_buf or bufnr
+  UI:stop_spinner(history_bufnr, "thinking")
   local conn = Network.get_connection(history_bufnr)
   if conn and conn.pipe and not conn.pipe:is_closing() then
-    pcall(Network.send_request, conn, "session/cancel", { session_id = conn.session_id })
+    local ok, err = pcall(Network.send_request, conn, "session/cancel", { session_id = conn.session_id })
+    if not ok then
+      vim.notify("[CodeSavant Error] Failed to cancel execution loop: " .. tostring(err), vim.log.levels.ERROR)
+    end
   end
 end
 
@@ -641,6 +796,12 @@ local function apply_buffer_config(history_bufnr, input_bufnr)
 
   -- Normal mode Esc inside Input Buffer also cancels/aborts execution
   vim.keymap.set("n", "<Esc>", function() handle_cancel(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "Abort agent execution" })
+
+  -- Bind manual render-markdown toggle keymaps if configured
+  if keymaps.toggle_render then
+    vim.keymap.set("n", keymaps.toggle_render, function() M.toggle_render_markdown(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Toggle Render-Markdown" })
+    vim.keymap.set("n", keymaps.toggle_render, function() M.toggle_render_markdown(history_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Toggle Render-Markdown" })
+  end
 
   -- Add local cnoreabbrevs to trap buffer commands
   local function setup_abbrevs(buf)
@@ -811,8 +972,11 @@ function M.mount_session(history_bufnr, target_winid)
     return
   end
 
-  -- If only a partial or no layout is reusable, cleanly close any existing CodeSavant windows
-  -- on the current tabpage first to prevent layout duplication and leaks.
+  local spawn_split = M.config.spawn_split or "vsplit"
+  local new_hist_win, new_inp_win
+
+  -- Standard full mount: No visible/partial layout exists.
+  -- Cleanly close any leftover windows from other sessions to avoid leaks
   local current_tab = vim.api.nvim_get_current_tabpage()
   for _, win in ipairs(vim.api.nvim_tabpage_list_wins(current_tab)) do
     if vim.api.nvim_win_is_valid(win) then
@@ -824,14 +988,10 @@ function M.mount_session(history_bufnr, target_winid)
     end
   end
 
-  -- 2. No layout is visible: construct the splits programmatically.
   local target_win = target_winid or vim.api.nvim_get_current_win()
   if not vim.api.nvim_win_is_valid(target_win) then
     target_win = vim.api.nvim_get_current_win()
   end
-
-  local spawn_split = M.config.spawn_split or "vsplit"
-  local new_hist_win
 
   if spawn_split == "tabnew" then
     vim.api.nvim_cmd({ cmd = "tabnew" }, {})
@@ -844,7 +1004,6 @@ function M.mount_session(history_bufnr, target_winid)
     if spawn_split == "split" or spawn_split == "hsplit" then
       direction = "below"
     end
-    -- Create history window programmatically relative to target_win with buffer pre-set!
     new_hist_win = vim.api.nvim_open_win(history_bufnr, false, {
       win = target_win,
       split = direction,
@@ -852,7 +1011,7 @@ function M.mount_session(history_bufnr, target_winid)
   end
 
   -- Create input window programmatically below new_hist_win with input buffer pre-set!
-  local new_inp_win = vim.api.nvim_open_win(input_bufnr, false, {
+  new_inp_win = vim.api.nvim_open_win(input_bufnr, false, {
     win = new_hist_win,
     split = "below",
     height = 3,
@@ -863,6 +1022,12 @@ function M.mount_session(history_bufnr, target_winid)
   vim.wo[new_inp_win].winfixheight = true
   vim.wo[new_inp_win].number = false
   vim.wo[new_inp_win].relativenumber = false
+
+  -- Apply horizontal width lock-down if spawned as a sidebar panel
+  if spawn_split == "vsplit" then
+    vim.wo[new_hist_win].winfixwidth = true
+    vim.wo[new_inp_win].winfixwidth = true
+  end
 
   -- Bind partner metadata
   vim.b[history_bufnr].partner_win = new_inp_win
@@ -1034,6 +1199,118 @@ function M.select_session()
   end
 end
 
+--- Asynchronously queries the daemon for workspace sessions and presents an interactive selector.
+function M.load_session_picker()
+  -- Self-Bootstrapping check on demand
+  M.bootstrap_if_needed()
+
+  local socket_path = M.config.socket_path or CONSTANTS.DEFAULT_SOCKET_PATH
+  local workspace_path = vim.fn.getcwd()
+
+  M.ensure_daemon_running(function(success, err_msg)
+    if not success then
+      vim.schedule(function()
+        vim.notify(err_msg or "[CodeSavant Error] Background daemon is not running.", vim.log.levels.ERROR)
+      end)
+      return
+    end
+
+    local Network = require("code_savant.network")
+    Network.list_sessions(socket_path, workspace_path, function(sessions, list_err)
+      if list_err then
+        vim.notify("[CodeSavant Error] Failed to list sessions: " .. tostring(list_err), vim.log.levels.ERROR)
+        return
+      end
+
+      if not sessions or #sessions == 0 then
+        vim.notify("[CodeSavant] No saved chat sessions found in this workspace.", vim.log.levels.INFO)
+        return
+      end
+
+      local items = {}
+      local session_map = {}
+
+      for _, s in ipairs(sessions) do
+        local meta = s.metadata or {}
+        local name = meta.name or "Untitled Session"
+        local date = meta.last_updated or meta.created_at or "Unknown Date"
+        -- Format date nicely (usually in ISO 8601 e.g. "2026-06-19T10:20:30")
+        local clean_date = date:gsub("T", " "):gsub("%.%d+", "")
+        local label = string.format("%s (%s) - %d turns", name, clean_date, s.turn_count or 0)
+        table.insert(items, label)
+        session_map[label] = s
+      end
+
+      local function on_choice(choice)
+        if not choice then return end
+        local selected = session_map[choice]
+        if not selected then return end
+
+        local result = M.create_chat_buffer()
+        -- Load connection and stream session history in the active split window
+        M.start_chat_session(result.bufnr, selected.metadata.mock_mode or false, selected.session_id)
+      end
+
+      local has_telescope, telescope = pcall(require, "telescope")
+      if has_telescope then
+        local pickers = require("telescope.pickers")
+        local finders = require("telescope.finders")
+        local conf = require("telescope.config").values
+        local actions = require("telescope.actions")
+        local action_state = require("telescope.actions.state")
+
+        pickers.new({}, {
+          prompt_title = "Load CodeSavant Session",
+          finder = finders.new_table({
+            results = items,
+          }),
+          sorter = conf.generic_sorter({}),
+          attach_mappings = function(prompt_bufnr)
+            actions.select_default:replace(function()
+              actions.close(prompt_bufnr)
+              local selection = action_state.get_selected_entry()
+              if selection then
+                on_choice(selection[1])
+              end
+            end)
+            return true
+          end,
+        }):find()
+      else
+        vim.ui.select(items, {
+          prompt = "Select CodeSavant Session to Load:",
+        }, function(choice)
+          if choice then
+            on_choice(choice)
+          end
+        end)
+      end
+    end)
+  end)
+end
+
+--- Manually toggles the visual rendering of markdown overlays on a per-buffer basis
+--- @param bufnr integer
+function M.toggle_render_markdown(bufnr)
+  local rm = get_render_markdown()
+  if not rm then
+    vim.notify("[CodeSavant] render-markdown.nvim is not installed in your Neovim environment.", vim.log.levels.WARN)
+    return
+  end
+
+  local is_disabled = vim.b[bufnr].render_markdown_disabled or false
+  
+  if is_disabled then
+    pcall(rm.enable, bufnr)
+    vim.b[bufnr].render_markdown_disabled = false
+    vim.notify("[CodeSavant] Render-Markdown Enabled", vim.log.levels.INFO)
+  else
+    pcall(rm.disable, bufnr)
+    vim.b[bufnr].render_markdown_disabled = true
+    vim.notify("[CodeSavant] Render-Markdown Disabled (Unrendered Raw View)", vim.log.levels.INFO)
+  end
+end
+
 --- Setup CodeSavant plugin
 --- Merges configuration, registers commands, and handles boot configurations.
 --- @param opts? table
@@ -1045,6 +1322,16 @@ function M.setup(opts)
   end
 
   M.config = vim.tbl_deep_extend("force", DEFAULT_CONFIG, opts or {})
+
+  -- One-time boot check for render-markdown (Zero repeating lookup costs)
+  local ok, rm = pcall(require, "render-markdown")
+  M._has_render_markdown = ok
+  if ok then
+    M._render_markdown_api = rm
+  end
+
+  -- Native Tree-sitter markdown injection (instant syntax highlights)
+  pcall(vim.treesitter.language.register, "markdown", CONSTANTS.FILETYPE)
 
   -- Register public commands
   vim.api.nvim_create_user_command(CONSTANTS.COMMAND_CHAT, function(cmd_opts)
@@ -1076,6 +1363,10 @@ function M.setup(opts)
 
   vim.api.nvim_create_user_command("CodeSavantSessions", function()
     M.select_session()
+  end, { force = true })
+
+  vim.api.nvim_create_user_command("CodeSavantHistory", function()
+    M.load_session_picker()
   end, { force = true })
 
   vim.api.nvim_create_user_command("CodeSavantNextSession", function()

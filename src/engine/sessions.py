@@ -6,7 +6,6 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 from engine.constants import (
-    DEFAULT_RETENTION_DAYS,
     DEFAULT_SESSION_NAME,
     MAX_AUTO_NAME_LENGTH,
     DELTA_TYPE_SET,
@@ -23,7 +22,7 @@ from engine.types import ChatMessage, AgentSessionProtocol, SessionMetadataPaylo
 
 
 class SessionPayload(BaseModel):
-    session_id: str
+    session_id: uuid.UUID
     metadata: SessionMetadataPayload = Field(default_factory=SessionMetadataPayload)
     chat_history: List[ChatMessage] = Field(default_factory=list)
 
@@ -37,7 +36,7 @@ class AgentSession(AgentSessionProtocol):
 
     def __init__(
         self,
-        session_id: str,
+        session_id: uuid.UUID,
         chat_history: List[ChatMessage],
         metadata: SessionMetadataPayload
     ):
@@ -46,7 +45,7 @@ class AgentSession(AgentSessionProtocol):
         self._history: List[ChatMessage] = list(chat_history)
 
     @property
-    def session_id(self) -> str:
+    def session_id(self) -> uuid.UUID:
         return self._session_id
 
     @property
@@ -56,6 +55,12 @@ class AgentSession(AgentSessionProtocol):
     @property
     def metadata(self) -> SessionMetadataPayload:
         return self._metadata
+
+    def __repr__(self) -> str:
+        return f"AgentSession(id={self.session_id}, turns={len(self._history)}, agent_name={self._metadata.agent_name})"
+
+    def __str__(self) -> str:
+        return f"AgentSession {self.session_id} [{self._metadata.name or 'Untitled'}] (Turns: {len(self._history)})"
 
     async def append_message(self, message: ChatMessage) -> None:
         """Appends a pre-validated strict ChatMessage turn element."""
@@ -145,12 +150,13 @@ class SessionManager:
             self.storage_dir.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(_mkdir)
 
-    def _get_filepath(self, session_id: str, checkpoint_name: Optional[str] = None, storage_dir: Optional[Path] = None) -> Path:
+    def _get_filepath(self, session_id: uuid.UUID, checkpoint_name: Optional[str] = None, storage_dir: Optional[Path] = None) -> Path:
         target_dir = storage_dir or self.storage_dir
+        session_str = str(session_id)
         if checkpoint_name:
-            filename = f"{session_id}{self.checkpoint_separator}{checkpoint_name}{self.session_suffix}"
+            filename = f"{session_str}{self.checkpoint_separator}{checkpoint_name}{self.session_suffix}"
         else:
-            filename = f"{session_id}{self.session_suffix}"
+            filename = f"{session_str}{self.session_suffix}"
         return target_dir / filename
 
     async def save_session(self, session: AgentSession) -> None:
@@ -160,7 +166,7 @@ class SessionManager:
         """
         # Resolve output files against repository base storage_dir
         filepath = self._get_filepath(session.session_id)
-        meta_filepath = self.storage_dir / f"{session.session_id}{self.meta_suffix}"
+        meta_filepath = self.storage_dir / f"{str(session.session_id)}{self.meta_suffix}"
 
         # Update metadata state cleanly using Pydantic's native model_copy (zero manual dict rebuilds)
         now_iso = datetime.datetime.now().isoformat()
@@ -193,12 +199,12 @@ class SessionManager:
             meta_str
         )
 
-    async def create_sub_session(self, parent_session_id: str, agent_name: str, query: str) -> AgentSession:
+    async def create_sub_session(self, parent_session_id: uuid.UUID, agent_name: str, query: str) -> AgentSession:
         """
         Creates a new isolated child session under the parent session's subdirectory.
         Prevents parent listing pollution while keeping sessions structurally associated.
         """
-        child_session_id = f"{agent_name}_{uuid.uuid7()}"
+        child_session_id = uuid.uuid7()
         
         # Return a pure domain AgentSession
         sub_session = AgentSession(
@@ -209,12 +215,13 @@ class SessionManager:
                 query=query,
                 created_at=datetime.datetime.now().isoformat(),
                 last_updated=datetime.datetime.now().isoformat(),
-                turn_count=0
+                turn_count=0,
+                agent_name=agent_name
             )
         )
         
         # Resolve path under parent session id
-        child_storage_dir = self.storage_dir / parent_session_id
+        child_storage_dir = self.storage_dir / str(parent_session_id)
         
         sub_manager = SessionManager(
             storage_dir=child_storage_dir,
@@ -279,14 +286,15 @@ class SessionManager:
                 raise ValueError(f"Line {line_num} in {filepath} has invalid ChatMessage structure: {e}")
         return None
 
-    async def load_session(self, session_id: str, checkpoint_name: Optional[str] = None) -> AgentSession:
+    async def load_session(self, session_id: uuid.UUID, checkpoint_name: Optional[str] = None) -> AgentSession:
         """
         Asynchronously loads and parses session files line-by-line using a sequential playback parser.
         Supports both standard JSON (SessionPayload) and JSONL formats containing state modifiers.
         Loads companion metadata sidecar to merge dates and reconstruct the fully validated session.
         """
         filepath = self._get_filepath(session_id, checkpoint_name)
-        meta_filepath = self.storage_dir / f"{session_id}{self.meta_suffix}"
+        session_str = str(session_id)
+        meta_filepath = self.storage_dir / f"{session_str}{self.meta_suffix}"
 
         def _read_files():
             if not filepath.exists():
@@ -304,7 +312,7 @@ class SessionManager:
 
         chat_history: List[ChatMessage] = []
         metadata_from_payload: Optional[SessionMetadataPayload] = None
-        session_id_from_payload: Optional[str] = None
+        session_id_from_payload: Optional[uuid.UUID] = None
 
         # Clean the input content to check if it represents a single standard JSON object
         stripped_content = content.strip()
@@ -403,8 +411,8 @@ class SessionManager:
         def _list_dir():
             try:
                 return list(self.storage_dir.iterdir())
-            except Exception:
-                return []
+            except Exception as e:
+                raise RuntimeError(f"Failed to list session storage directory '{self.storage_dir}': {e}") from e
 
         paths = await asyncio.to_thread(_list_dir)
         sessions: List[SessionMetaSidecar] = []
@@ -419,17 +427,20 @@ class SessionManager:
                     content = await asyncio.to_thread(_read_meta)
                     sidecar = SessionMetaSidecar.model_validate_json(content)
                     sessions.append(sidecar)
-                except Exception:
+                except Exception as e:
+                    import sys
+                    print(f"[SessionManager] Warning: Failed to parse corrupted session sidecar metadata file at '{p}': {e}", file=sys.stderr)
                     continue
 
         sessions.sort(key=lambda s: s.metadata.last_updated or "", reverse=True)
         return sessions
 
-    async def delete_session(self, session_id: str) -> None:
+    async def delete_session(self, session_id: uuid.UUID) -> None:
         """Asynchronously deletes a session JSON file and its companion sidecar, along with nested scratch logs."""
         filepath = self._get_filepath(session_id)
-        meta_filepath = self.storage_dir / f"{session_id}{self.meta_suffix}"
-        scratch_dir = self.storage_dir / session_id / self.scratch_dir_name
+        session_str = str(session_id)
+        meta_filepath = self.storage_dir / f"{session_str}{self.meta_suffix}"
+        scratch_dir = self.storage_dir / session_str / self.scratch_dir_name
 
         def _remove():
             if filepath.exists():
@@ -445,7 +456,7 @@ class SessionManager:
                 scratch_dir.rmdir()
                 
             # If the session folder itself exists, delete it if empty
-            session_dir = self.storage_dir / session_id
+            session_dir = self.storage_dir / session_str
             if session_dir.exists() and session_dir.is_dir():
                 try:
                     if not list(session_dir.iterdir()):
@@ -459,11 +470,11 @@ class SessionManager:
         """
         Asynchronously writes truncated tool outputs to a structured, session-specific directory.
         """
-        log_filepath = self.storage_dir / session.session_id / self.scratch_dir_name / f"{self.tool_log_prefix}{tool_name}_{uuid.uuid7()}{self.tool_log_suffix}"
+        log_filepath = self.storage_dir / str(session.session_id) / self.scratch_dir_name / f"{self.tool_log_prefix}{tool_name}_{uuid.uuid7()}{self.tool_log_suffix}"
         await asyncio.to_thread(_sync_write_truncation_log, log_filepath, content)
         return log_filepath
 
-    async def save_checkpoint(self, session_id: str, checkpoint_name: str) -> None:
+    async def save_checkpoint(self, session_id: uuid.UUID, checkpoint_name: str) -> None:
         """Asynchronously creates a named checkpoint snapshot of the current session in JSONL format."""
         session = await self.load_session(session_id)
         filepath = self._get_filepath(session_id, checkpoint_name)
@@ -473,7 +484,7 @@ class SessionManager:
         payload_str = "\n".join(lines)
         await asyncio.to_thread(_sync_write_checkpoint, filepath, payload_str)
 
-    async def enforce_retention_policy(self, max_age_days: int = DEFAULT_RETENTION_DAYS, max_count: Optional[int] = None) -> None:
+    async def enforce_retention_policy(self, max_age_days: int, max_count: Optional[int] = None) -> None:
         """Asynchronously enforces age and count constraints across active sessions."""
         sessions = await self.list_sessions()
         now = datetime.datetime.now()

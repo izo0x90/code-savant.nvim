@@ -150,20 +150,37 @@ class AgentRegistry:
     ):
         """Strictly requires all search paths, config extensions, and system directories to be injected."""
         self._profiles: Dict[str, Dict[str, Any]] = {}
+        self._sources: Dict[str, Optional[str]] = {}
         self.search_paths = [Path(p) for p in search_paths]
         self.system_agents_dir = Path(system_agents_dir)
         self.agent_extensions = agent_extensions
 
         self.load_system_profiles()
 
-    def register_profile(self, name: str, definition: Dict[str, Any]) -> None:
+    def register_profile(self, name: str, definition: Dict[str, Any], source: Optional[str]) -> None:
         """
-        Validates the raw definition against the SubagentDefinition Pydantic schema
-        and registers the parsed and validated dict representation.
+        Validates the raw definition against the SubagentDefinition Pydantic schema,
+        checks for namespace collisions adhering to Rule 1 (fail loudly), and registers the profile.
         """
         # Parse and structurally validate definition using Pydantic
         validated = SubagentDefinition(**definition)
-        self._profiles[name] = validated.dict()
+        
+        if name in self._profiles:
+            existing_source = self._sources.get(name)
+            if existing_source is None:
+                # Intended override of built-in system agent
+                import sys
+                print(f"[AgentRegistry] System default agent '{name}' is overridden by custom profile at '{source}'", file=sys.stderr)
+            elif existing_source != source:
+                # Custom vs. Custom conflict! Fail loudly with rich context!
+                raise RuntimeError(
+                    f"Agent registration collision! Subagent name '{name}' defined in '{source}' "
+                    f"conflicts with already registered custom subagent from '{existing_source}'."
+                )
+
+        dumped = validated.model_dump()
+        self._profiles[name] = dumped
+        self._sources[name] = source
 
     def get_profile(self, name: str) -> Optional[Dict[str, Any]]:
         return self._profiles.get(name)
@@ -201,7 +218,7 @@ class AgentRegistry:
                                 break
                         profile["name"] = base
 
-                    self.register_profile(profile["name"], profile)
+                    self.register_profile(profile["name"], profile, source=None)
                 except Exception as e:
                     # System default loader fails loudly on validation errors (Rule 1)
                     raise RuntimeError(
@@ -224,7 +241,7 @@ class AgentRegistry:
                 profile = await self._load_agent_card_async(p)
                 name = profile.get("name")
                 if name:
-                    self.register_profile(name, profile)
+                    self.register_profile(name, profile, source=str(p.resolve()))
                     discovered.append(self.get_profile(name))
             except Exception as e:
                 # Fail loudly by logging detailed diagnostic message to stderr (Rule 1)

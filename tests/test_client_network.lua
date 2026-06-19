@@ -210,6 +210,79 @@ assert(Network.get_connection(bufnr) == nil, "connection must be deregistered fr
 print("[SUCCESS] Test 8 passed.")
 
 ---------------------------------------------------------
+-- TEST 9: Async Network.list_sessions
+---------------------------------------------------------
+print("\n[TEST 9] Verifying Network.list_sessions asynchronous lookup...")
+
+-- Rebind server to accept a new connection for list_sessions
+local list_server_pipe = nil
+local server_received_list_data = ""
+
+uv.close(server) -- Close previous server to bind again on a clean state
+server = uv.new_pipe(false)
+os.remove(socket_path)
+local list_bind_ok, list_bind_err = uv.pipe_bind(server, socket_path)
+if not list_bind_ok then
+  print("Failed to re-bind mock server for Test 9: " .. tostring(list_bind_err))
+  os.exit(1)
+end
+
+local list_listen_ok, list_listen_err = uv.listen(server, 128, function(err)
+  if err then return end
+  local client = uv.new_pipe(false)
+  uv.accept(server, client)
+  list_server_pipe = client
+  
+  uv.read_start(client, function(read_err, chunk)
+    if chunk then
+      server_received_list_data = server_received_list_data .. chunk
+      -- Respond with session list
+      local response_payload = {
+        jsonrpc = "2.0",
+        result = {
+          sessions = {
+            {
+              session_id = "sess-1234",
+              metadata = { name = "Mock Saved Session", created_at = "2026-06-19T12:00:00" },
+              turn_count = 5
+            }
+          }
+        },
+        id = 9999
+      }
+      uv.write(client, vim.json.encode(response_payload) .. "\n")
+    end
+  end)
+end)
+
+if not list_listen_ok then
+  print("Failed to re-listen on mock server for Test 9: " .. tostring(list_listen_err))
+  os.exit(1)
+end
+
+local received_sessions = nil
+local list_error = nil
+
+Network.list_sessions(socket_path, "/mock/workspace", function(sessions, err)
+  received_sessions = sessions
+  list_error = err
+end)
+
+wait_for_condition(2000, function()
+  return received_sessions ~= nil or list_error ~= nil
+end, "Network.list_sessions response callback")
+
+assert(list_error == nil, "list_sessions should not raise an error: " .. tostring(list_error))
+assert(received_sessions, "list_sessions should return sessions")
+assert(#received_sessions == 1, "should contain exactly one session")
+assert(received_sessions[1].session_id == "sess-1234", "session_id should match")
+assert(received_sessions[1].metadata.name == "Mock Saved Session", "name should match")
+assert(received_sessions[1].turn_count == 5, "turn_count should match")
+
+pcall(function() uv.close(list_server_pipe) end)
+print("[SUCCESS] Test 9 passed.")
+
+---------------------------------------------------------
 -- TEARDOWN & EXIT
 ---------------------------------------------------------
 print("\n[TEST TEARDOWN] Cleaning up resources...")

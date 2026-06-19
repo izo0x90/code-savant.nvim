@@ -9,6 +9,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Parse optional arguments
 MOCK_ARG=""
+PERF_DEBUG="false"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mock|-m)
@@ -19,9 +20,13 @@ while [[ $# -gt 0 ]]; do
       MOCK_ARG="live"
       shift
       ;;
+    --perf|-p)
+      PERF_DEBUG="true"
+      shift
+      ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: $0 [--mock|-m] [--live|-l]"
+      echo "Usage: $0 [--mock|-m] [--live|-l] [--perf|-p]"
       exit 1
       ;;
   esac
@@ -31,6 +36,7 @@ done
 exec nvim -c "set rtp+=${PROJECT_ROOT}" \
           -c "lua require('code_savant').setup({
                 socket_path = '/tmp/code_savant.sock',
+                perf_debug = ${PERF_DEBUG},
                 keymaps = {
                   expand = '<CR>',
                   submit = '<CR>'

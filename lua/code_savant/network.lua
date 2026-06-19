@@ -61,8 +61,9 @@ end
 --- @param bufnr integer
 --- @param workspace_path? string Optional workspace path to start a session with
 --- @param mock_mode? boolean Optional mock mode flag
+--- @param session_id? string Optional session ID to load instead of starting a new one
 --- @return CodeSavantConnection
-function Network.connect(socket_path, bufnr, workspace_path, mock_mode)
+function Network.connect(socket_path, bufnr, workspace_path, mock_mode, session_id)
   -- 1. Parameter Validation with early exits & loud errors (Guideline 1, 4)
   if type(socket_path) ~= "string" or socket_path == "" then
     error("Invalid argument 'socket_path': must be a non-empty string. Got: " .. vim.inspect(socket_path))
@@ -116,19 +117,27 @@ function Network.connect(socket_path, bufnr, workspace_path, mock_mode)
       Network.disconnect(bufnr)
     else
       -- Connection established successfully!
-      -- Send session/start request to server to register and begin streaming telemetry
+      -- Send session/start or session/load request to server to register and begin streaming telemetry
       local active_conn = Network._connections[bufnr]
       if active_conn then
         vim.schedule(function()
           local path = active_conn.workspace_path or vim.fn.getcwd()
-          local params = {
-            workspace_path = path,
-            agent_profile = "coder"
-          }
-          if active_conn.mock_mode ~= nil then
-            params.mock_mode = active_conn.mock_mode
+          if active_conn.session_id_to_load then
+            local params = {
+              workspace_path = path,
+              session_id = active_conn.session_id_to_load,
+            }
+            Network.send_request(active_conn, "session/load", params)
+          else
+            local params = {
+              workspace_path = path,
+              agent_profile = "coder"
+            }
+            if active_conn.mock_mode ~= nil then
+              params.mock_mode = active_conn.mock_mode
+            end
+            Network.send_request(active_conn, "session/start", params)
           end
-          Network.send_request(active_conn, "session/start", params)
         end)
       end
     end
@@ -141,6 +150,7 @@ function Network.connect(socket_path, bufnr, workspace_path, mock_mode)
     socket_path = socket_path,
     workspace_path = workspace_path,
     mock_mode = mock_mode,
+    session_id_to_load = session_id,
     accumulator = "",
     listeners = listeners,
   }
@@ -152,6 +162,94 @@ function Network.connect(socket_path, bufnr, workspace_path, mock_mode)
   end)
 
   return conn
+end
+
+--- Query the backend asynchronously for a list of saved sessions in a workspace
+--- @param socket_path string
+--- @param workspace_path string
+--- @param callback fun(sessions: table|nil, err: string|nil)
+function Network.list_sessions(socket_path, workspace_path, callback)
+  if type(socket_path) ~= "string" or socket_path == "" then
+    error("Invalid argument 'socket_path': must be a non-empty string. Got: " .. vim.inspect(socket_path))
+  end
+  if type(workspace_path) ~= "string" or workspace_path == "" then
+    error("Invalid argument 'workspace_path': must be a non-empty string. Got: " .. vim.inspect(workspace_path))
+  end
+  if type(callback) ~= "function" then
+    error("Invalid argument 'callback': must be a function. Got: " .. vim.inspect(callback))
+  end
+
+  local uv = vim.uv or vim.loop
+  local pipe, err = uv.new_pipe(false)
+  if not pipe then
+    callback(nil, "Failed to create pipe: " .. tostring(err))
+    return
+  end
+
+  local accumulator = ""
+  pipe:connect(socket_path, function(connect_err)
+    if connect_err then
+      pcall(function() pipe:close() end)
+      vim.schedule(function()
+        callback(nil, "Failed to connect to daemon socket: " .. tostring(connect_err))
+      end)
+      return
+    end
+
+    -- Send session/list request
+    local payload = {
+      jsonrpc = "2.0",
+      method = "session/list",
+      params = { workspace_path = workspace_path },
+      id = 9999,
+    }
+    local status, serialized = pcall(vim.json.encode, payload)
+    if not status then
+      pcall(function() pipe:close() end)
+      vim.schedule(function()
+        callback(nil, "Failed to serialize JSON-RPC payload")
+      end)
+      return
+    end
+
+    pipe:write(serialized .. "\n", function(write_err)
+      if write_err then
+        pcall(function() pipe:close() end)
+        vim.schedule(function()
+          callback(nil, "Failed to write payload to pipe: " .. tostring(write_err))
+        end)
+      end
+    end)
+  end)
+
+  pipe:read_start(function(read_err, data)
+    if read_err or not data then
+      pcall(function() pipe:close() end)
+      return
+    end
+
+    accumulator = accumulator .. data
+    local newline_pos = string.find(accumulator, "\n", 1, true)
+    if newline_pos then
+      local frame = string.sub(accumulator, 1, newline_pos - 1)
+      pcall(function() pipe:close() end)
+
+      vim.schedule(function()
+        local decode_ok, parsed = pcall(vim.json.decode, frame)
+        if decode_ok then
+          if parsed.error then
+            callback(nil, parsed.error.message or "Unknown backend error")
+          elseif parsed.result and parsed.result.sessions then
+            callback(parsed.result.sessions, nil)
+          else
+            callback(nil, "Invalid response payload")
+          end
+        else
+          callback(nil, "Failed to decode JSON response")
+        end
+      end)
+    end
+  end)
 end
 
 --- Send a generic JSON-RPC 2.0 request asynchronously over a connection

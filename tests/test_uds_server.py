@@ -27,12 +27,9 @@ async def setup_test_dependencies(tmp_path: Path):
         "small_model": None,
         "context_filenames": ["GEMINI.md"],
         "global_context_dir": str(tmp_path / "global_gemini"),
+        "session_storage_dir": ".code_savant/sessions",
         "requires_approval": False,
-        "providers": {
-            "gemini": {
-                "api_key_env_var": "GEMINI_API_KEY"
-            }
-        }
+        "providers": {"gemini": {"api_key_env_var": "GEMINI_API_KEY"}},
     }
     default_file.write_text(json.dumps(defaults_dict))
 
@@ -40,18 +37,19 @@ async def setup_test_dependencies(tmp_path: Path):
         "google/gemini-3.5-flash": {
             "name": "google/gemini-3.5-flash",
             "provider": "gemini",
-            "limits": {
-                "context_tokens": 1000000,
-                "max_output_tokens": 8192
-            }
+            "limits": {"context_tokens": 1000000, "max_output_tokens": 8192},
         }
     }
     bundled_file.write_text(json.dumps(bundled_data))
 
-    settings_manager = SettingsManager(default_path=default_file, user_path=user_file, project_path=proj_file)
+    settings_manager = SettingsManager(
+        default_path=default_file, user_path=user_file, project_path=proj_file
+    )
     await settings_manager.load_settings()
 
-    model_registry = ModelRegistryService(bundled_path=bundled_file, cache_path=cache_file)
+    model_registry = ModelRegistryService(
+        bundled_path=bundled_file, cache_path=cache_file
+    )
     await model_registry.initialize()
 
     return settings_manager, model_registry
@@ -66,7 +64,11 @@ async def server_env():
     os.makedirs(workspace_path, exist_ok=True)
 
     settings_manager, model_registry = await setup_test_dependencies(Path(test_dir))
-    server = UdsServer(socket_path=socket_path, settings_manager=settings_manager, model_registry=model_registry)
+    server = UdsServer(
+        socket_path=socket_path,
+        settings_manager=settings_manager,
+        model_registry=model_registry,
+    )
     await server.start()
 
     yield {
@@ -92,7 +94,7 @@ async def client_conn(server_env):
     """A pytest-asyncio fixture that connects a client stream and guarantees closed socket teardown."""
     reader, writer = await asyncio.open_unix_connection(server_env["socket_path"])
     yield reader, writer
-    
+
     writer.close()
     try:
         await writer.wait_closed()
@@ -112,7 +114,9 @@ async def test_json_rpc_codec():
     assert resp.endswith(b"\n")
 
     # Test error
-    err = JsonRpcCodec.encode_error(-32600, "Invalid Request", msg_id="abc", data="extra info")
+    err = JsonRpcCodec.encode_error(
+        -32600, "Invalid Request", msg_id="abc", data="extra info"
+    )
     decoded_err = json.loads(err.decode("utf-8").strip())
     assert decoded_err["jsonrpc"] == "2.0"
     assert decoded_err["error"]["code"] == -32600
@@ -153,9 +157,9 @@ async def test_uds_server_lifecycle(server_env, client_conn):
         "params": {
             "workspace_path": workspace_path,
             "agent_profile": "coder",
-            "mock_mode": True
+            "mock_mode": True,
         },
-        "id": 1
+        "id": 1,
     }
     writer.write((json.dumps(start_req) + "\n").encode("utf-8"))
     await writer.drain()
@@ -170,11 +174,8 @@ async def test_uds_server_lifecycle(server_env, client_conn):
     prompt_req = {
         "jsonrpc": "2.0",
         "method": "session/send_prompt",
-        "params": {
-            "session_id": session_id,
-            "text": "please think and optimize"
-        },
-        "id": 2
+        "params": {"session_id": session_id, "text": "please think and optimize"},
+        "id": 2,
     }
     writer.write((json.dumps(prompt_req) + "\n").encode("utf-8"))
     await writer.drain()
@@ -206,10 +207,8 @@ async def test_uds_server_lifecycle(server_env, client_conn):
     close_req = {
         "jsonrpc": "2.0",
         "method": "session/close",
-        "params": {
-            "session_id": session_id
-        },
-        "id": 3
+        "params": {"session_id": session_id},
+        "id": 3,
     }
     writer.write((json.dumps(close_req) + "\n").encode("utf-8"))
     await writer.drain()
@@ -233,11 +232,11 @@ async def test_uds_server_idempotency_and_errors(server_env, client_conn):
         "jsonrpc": "1.0",
         "method": "session/start",
         "params": {"workspace_path": "foo"},
-        "id": 100
+        "id": 100,
     }
     writer.write((json.dumps(req_invalid_ver) + "\n").encode("utf-8"))
     await writer.drain()
-    
+
     line = await reader.readline()
     resp = json.loads(line.decode("utf-8").strip())
     assert resp["id"] == 100
@@ -245,13 +244,10 @@ async def test_uds_server_idempotency_and_errors(server_env, client_conn):
     assert "Invalid Request" in resp["error"]["message"]
 
     # 3. Test missing method
-    req_no_method = {
-        "jsonrpc": "2.0",
-        "id": 101
-    }
+    req_no_method = {"jsonrpc": "2.0", "id": 101}
     writer.write((json.dumps(req_no_method) + "\n").encode("utf-8"))
     await writer.drain()
-    
+
     line = await reader.readline()
     resp = json.loads(line.decode("utf-8").strip())
     assert resp["id"] == 101
@@ -259,14 +255,10 @@ async def test_uds_server_idempotency_and_errors(server_env, client_conn):
     assert "Method not found" in resp["error"]["message"]
 
     # 4. Test nonexistent method
-    req_unknown_method = {
-        "jsonrpc": "2.0",
-        "method": "session/nonexistent",
-        "id": 102
-    }
+    req_unknown_method = {"jsonrpc": "2.0", "method": "session/nonexistent", "id": 102}
     writer.write((json.dumps(req_unknown_method) + "\n").encode("utf-8"))
     await writer.drain()
-    
+
     line = await reader.readline()
     resp = json.loads(line.decode("utf-8").strip())
     assert resp["id"] == 102
@@ -278,11 +270,11 @@ async def test_uds_server_idempotency_and_errors(server_env, client_conn):
         "jsonrpc": "2.0",
         "method": "session/start",
         "params": {},
-        "id": 103
+        "id": 103,
     }
     writer.write((json.dumps(req_missing_param) + "\n").encode("utf-8"))
     await writer.drain()
-    
+
     line = await reader.readline()
     resp = json.loads(line.decode("utf-8").strip())
     assert resp["id"] == 103
@@ -300,7 +292,9 @@ async def test_uds_server_idempotency_and_errors(server_env, client_conn):
 
 
 @pytest.mark.asyncio
-async def test_uds_server_provider_resolution_failures(server_env, client_conn, monkeypatch):
+async def test_uds_server_provider_resolution_failures(
+    server_env, client_conn, monkeypatch
+):
     """Verify that UdsServer fails cleanly and returns JSON-RPC error structures when API keys are unresolved."""
     workspace_path = server_env["workspace_path"]
     reader, writer = client_conn
@@ -324,9 +318,9 @@ async def test_uds_server_provider_resolution_failures(server_env, client_conn, 
         "params": {
             "workspace_path": workspace_path,
             "agent_profile": "coder",
-            "mock_mode": False
+            "mock_mode": False,
         },
-        "id": 1
+        "id": 1,
     }
     writer.write((json.dumps(start_req) + "\n").encode("utf-8"))
     await writer.drain()
@@ -338,11 +332,8 @@ async def test_uds_server_provider_resolution_failures(server_env, client_conn, 
     prompt_req = {
         "jsonrpc": "2.0",
         "method": "session/send_prompt",
-        "params": {
-            "session_id": session_id,
-            "text": "optimize loop"
-        },
-        "id": 2
+        "params": {"session_id": session_id, "text": "optimize loop"},
+        "id": 2,
     }
     writer.write((json.dumps(prompt_req) + "\n").encode("utf-8"))
     await writer.drain()
@@ -352,3 +343,73 @@ async def test_uds_server_provider_resolution_failures(server_env, client_conn, 
     assert "error" in response
     assert response["error"]["code"] == -32602
     assert "Credentials could not be resolved" in response["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_uds_server_session_list_and_load(server_env, client_conn):
+    """Start the UDS Server, start a session to persist a file, then list and load it back."""
+    workspace_path = server_env["workspace_path"]
+    reader, writer = client_conn
+
+    async def read_response(expected_id: int) -> dict:
+        while True:
+            line = await reader.readline()
+            if not line:
+                raise EOFError("Connection closed before response received")
+            msg = json.loads(line.decode("utf-8").strip())
+            if msg.get("id") == expected_id:
+                return msg
+
+    # 1. Start a session
+    start_req = {
+        "jsonrpc": "2.0",
+        "method": "session/start",
+        "params": {
+            "workspace_path": workspace_path,
+            "agent_profile": "coder",
+            "mock_mode": True,
+        },
+        "id": 1,
+    }
+    writer.write((json.dumps(start_req) + "\n").encode("utf-8"))
+    await writer.drain()
+
+    response = await read_response(1)
+    session_id = response["result"]["session_id"]
+
+    # 2. Query session/list
+    list_req = {
+        "jsonrpc": "2.0",
+        "method": "session/list",
+        "params": {
+            "workspace_path": workspace_path,
+        },
+        "id": 2,
+    }
+    writer.write((json.dumps(list_req) + "\n").encode("utf-8"))
+    await writer.drain()
+
+    list_response = await read_response(2)
+    assert "result" in list_response
+    sessions_list = list_response["result"]["sessions"]
+    assert len(sessions_list) > 0
+    assert any(s["session_id"] == session_id for s in sessions_list)
+
+    # 3. Query session/load on the saved session
+    load_req = {
+        "jsonrpc": "2.0",
+        "method": "session/load",
+        "params": {
+            "workspace_path": workspace_path,
+            "session_id": session_id,
+        },
+        "id": 3,
+    }
+    writer.write((json.dumps(load_req) + "\n").encode("utf-8"))
+    await writer.drain()
+
+    load_response = await read_response(3)
+    assert "result" in load_response
+    assert load_response["result"]["session_id"] == session_id
+    assert load_response["result"]["status"] == "active"
+    assert "chat_history" in load_response["result"]

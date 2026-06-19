@@ -1,4 +1,5 @@
 import os
+import uuid
 import shutil
 import asyncio
 import pytest
@@ -35,8 +36,8 @@ async def run_session_tests(tmp_dir: str):
     )
     await manager.ensure_storage_dir()
 
-    session_id_1 = "test-sess-abc"
-    session_id_2 = "test-sess-xyz"
+    session_id_1 = uuid.uuid7()
+    session_id_2 = uuid.uuid7()
     
     session_1 = AgentSession(
         session_id=session_id_1,
@@ -92,9 +93,9 @@ async def run_session_tests(tmp_dir: str):
     print("\n--- [1b] Testing Sequential Playback and Loud Failures ---")
     
     # 6a. Playback with State Modifiers
-    playback_sess_id = "playback-test-session"
-    playback_file = Path(tmp_dir) / f"{playback_sess_id}{SESSION_FILE_SUFFIX}"
-    playback_meta_file = Path(tmp_dir) / f"{playback_sess_id}{SESSION_META_SUFFIX}"
+    playback_sess_id = uuid.uuid7()
+    playback_file = Path(tmp_dir) / f"{str(playback_sess_id)}{SESSION_FILE_SUFFIX}"
+    playback_meta_file = Path(tmp_dir) / f"{str(playback_sess_id)}{SESSION_META_SUFFIX}"
     
     import json
     lines = [
@@ -107,7 +108,7 @@ async def run_session_tests(tmp_dir: str):
         f.write("\n".join(lines))
         
     meta_data = {
-        "session_id": playback_sess_id,
+        "session_id": str(playback_sess_id),
         "metadata": {
             "name": "Sidecar Session Name That Is Way Too Long To Be Auto Saved In Under Sixty Four Characters Constraint",
             "query": "Sidecar Query",
@@ -131,8 +132,8 @@ async def run_session_tests(tmp_dir: str):
     print("✅ Successfully verified sequential playback modifiers and sidecar merging / trimming.")
     
     # 6b. Loud Parse Failure
-    corrupt_sess_id = "corrupt-test-session"
-    corrupt_file = Path(tmp_dir) / f"{corrupt_sess_id}{SESSION_FILE_SUFFIX}"
+    corrupt_sess_id = uuid.uuid7()
+    corrupt_file = Path(tmp_dir) / f"{str(corrupt_sess_id)}{SESSION_FILE_SUFFIX}"
     corrupt_lines = [
         json.dumps({"role": "user", "parts": [{"text": "Valid message"}]}),
         "{invalid-json-here}"
@@ -145,7 +146,7 @@ async def run_session_tests(tmp_dir: str):
         
     err_msg = str(exc_info.value)
     assert "Line 2" in err_msg
-    assert corrupt_sess_id in err_msg
+    assert str(corrupt_sess_id) in err_msg
     print("✅ Successfully verified loud parse failures with line numbers and file path.")
 
 
@@ -166,9 +167,10 @@ async def run_retention_tests(tmp_dir: str):
     for f in await asyncio.to_thread(os.listdir, tmp_dir):
         await asyncio.to_thread(os.remove, os.path.join(tmp_dir, f))
 
+    ret_ids = [uuid.uuid7() for _ in range(5)]
     # Create 5 mock sessions
     for i in range(5):
-        sess_id = f"retention-sess-{i}"
+        sess_id = ret_ids[i]
         session = AgentSession(
             session_id=sess_id,
             chat_history=[],
@@ -183,13 +185,13 @@ async def run_retention_tests(tmp_dir: str):
     assert len(sessions) == 5, f"Expected 5 sessions, got {len(sessions)}"
 
     # Enforce count limit of 3
-    await manager.enforce_retention_policy(max_count=3)
+    await manager.enforce_retention_policy(max_age_days=30, max_count=3)
     sessions_after = await manager.list_sessions()
     assert len(sessions_after) == 3, f"Expected retention limit to prune to 3, got {len(sessions_after)}"
-    # The remaining sessions should be the newest ones (index 4, 3, 2)
+    # The remaining sessions should be the newest ones
     session_ids = [s.session_id for s in sessions_after]
-    assert "retention-sess-4" in session_ids
-    assert "retention-sess-0" not in session_ids
+    assert ret_ids[4] in session_ids
+    assert ret_ids[0] not in session_ids
     print("✅ Successfully enforced count-based retention pruning.")
 
 
@@ -253,8 +255,9 @@ async def run_integration_tests(tmp_dir: str):
         "session_id": "integrated-test-sess"
     }
 
+    sess_id = uuid.uuid7()
     session = AgentSession(
-        session_id="integrated-test-sess",
+        session_id=sess_id,
         chat_history=[],
         metadata=SessionMetadataPayload()
     )
@@ -291,9 +294,9 @@ async def run_integration_tests(tmp_dir: str):
     # Verify that a session file was automatically created and written to
     sessions = await manager.list_sessions()
     assert len(sessions) >= 1
-    assert any(s.session_id == "integrated-test-sess" for s in sessions)
+    assert any(s.session_id == sess_id for s in sessions)
 
-    loaded = await manager.load_session("integrated-test-sess")
+    loaded = await manager.load_session(sess_id)
     assert len(loaded.chat_history) > 0, "Expected session history to be saved dynamically"
     print("✅ Successfully verified auto-save triggers inside the live orchestration loop.")
 
@@ -326,3 +329,36 @@ if __name__ == "__main__":
 @pytest.mark.asyncio
 async def test_session_and_client_all():
     await main()
+
+
+@pytest.mark.asyncio
+async def test_token_and_timer_performance():
+    from engine.context import estimate_token_count_sync
+    from engine.types import TextPart
+    from engine.timer import DeadlineTimer
+    import asyncio
+    
+    # 1. Verify token calculation
+    parts = [TextPart(text="Hello, how are you?")]
+    tokens = estimate_token_count_sync(parts)
+    assert tokens > 0
+    
+    # 2. Verify Timer behavior
+    timer = DeadlineTimer(limit_seconds=0.1)
+    timer.start()
+    assert not timer.is_triggered
+    await asyncio.sleep(0.01)
+    timer.pause()
+    assert timer.paused
+    
+    elapsed = timer.elapsed_seconds
+    assert elapsed > 0.0
+    await asyncio.sleep(0.02)
+    # Since paused, elapsed seconds should not increase
+    assert timer.elapsed_seconds == elapsed
+    
+    timer.resume()
+    assert not timer.paused
+    await asyncio.sleep(0.12)
+    assert timer.is_triggered
+    timer.stop()

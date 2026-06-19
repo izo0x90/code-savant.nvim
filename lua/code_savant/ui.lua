@@ -12,6 +12,15 @@ UI.CONSTANTS = {
   HIGHLIGHT_GROUP_COLLAPSED = "Comment",
   BORDER_TOP = "╭────────────────────────Thought Space────────────────────────╮",
   BORDER_BOTTOM = "╰─────────────────────────────────────────────────────────────╯",
+  SPINNER_STYLES = {
+    braille   = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+    clock     = { "◴", "◷", "◶", "◵" },
+    circle    = { "◐", "◓", "◑", "◒" },
+    equalizer = { " ", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃" },
+    shade     = { "░", "▒", "▓", "█", "▓", "▒" },
+    ellipsis  = { "   ", ".  ", ".. ", "..." },
+    retro     = { "|", "/", "-", "\\" },
+  },
 }
 
 -- Default module-level instance for simple access
@@ -27,6 +36,12 @@ function UI.new(api)
 
   -- Create namespace using injected API or vim.api
   self.namespace = self.api.nvim_create_namespace(UI.CONSTANTS.NAMESPACE_NAME)
+
+  self.animation_wheel = {
+    timer = nil,
+    tick_rate = 100, -- Milliseconds default
+    registry = {},   -- Map of "bufnr:key" -> SpinnerInstance
+  }
 
   return self
 end
@@ -95,26 +110,103 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
     error("[CodeSavantUI] Target buffer is invalid or closed: " .. tostring(bufnr))
   end
 
-  -- 3. Cache block content and metadata (preliminary step before extmark ID)
+  -- 3. Cache block content and metadata (idempotent, preserving previous state)
+  local existing = self.collapsed_blocks_cache[id]
+  local previous_extmark_id = existing and existing.extmark_id
+  local previous_status = existing and existing.status or "collapsed"
+  local previous_height = existing and existing.height
+
   self.collapsed_blocks_cache[id] = {
     full_content = full_content,
     type = block_type,
     title = title,
     bufnr = bufnr,
-    status = "collapsed", -- Initial state is collapsed
-    height = nil,
+    status = previous_status,
+    height = previous_height,
+    extmark_id = previous_extmark_id,
+    row = row or (existing and existing.row)
   }
 
-  -- 4. Idempotently clear existing extmark
-  local cached = self.collapsed_blocks_cache[id]
-  if cached and cached.extmark_id then
-    pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, cached.extmark_id)
+  -- 4. If the block is currently expanded, perform an inline in-place update of expanded lines
+  if previous_status == "expanded" then
+    local target_row = row or (existing and existing.row)
+    if previous_extmark_id then
+      local pos = self.api.nvim_buf_get_extmark_by_id(bufnr, self.namespace, previous_extmark_id, {})
+      if pos and #pos > 0 then
+        target_row = pos[1]
+      end
+    end
+
+    if target_row then
+      local lines = vim.split(full_content, "\n", { plain = true })
+      local display_lines = {}
+      if self.CONSTANTS.BORDER_TOP and self.CONSTANTS.BORDER_TOP ~= "" then
+        table.insert(display_lines, self.CONSTANTS.BORDER_TOP)
+      end
+      for _, line in ipairs(lines) do
+        table.insert(display_lines, line)
+      end
+      if self.CONSTANTS.BORDER_BOTTOM and self.CONSTANTS.BORDER_BOTTOM ~= "" then
+        table.insert(display_lines, self.CONSTANTS.BORDER_BOTTOM)
+      end
+      local height = #display_lines
+      local prev_height = previous_height or 1
+
+      self:run_programmatic_update(bufnr, function()
+        -- Atomically replace previous expanded buffer lines
+        self.api.nvim_buf_set_lines(bufnr, target_row, target_row + prev_height, false, display_lines)
+
+        -- Clean up old expanded extmark
+        if previous_extmark_id then
+          pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, previous_extmark_id)
+        end
+
+        -- Re-anchor the expanded indicator above the updated lines
+        local prefix = "▼ Thought: "
+        local hl_group = "Comment"
+
+        if block_type == "warning" then
+          prefix = "▼ Warning: "
+          hl_group = "DiagnosticWarn"
+        elseif block_type == "steering" then
+          prefix = "▼ Steering: "
+          hl_group = "Identifier"
+        elseif block_type == "error" then
+          prefix = "▼ Error: "
+          hl_group = "DiagnosticError"
+        elseif block_type == "confirmation" then
+          prefix = "▼ Approve/Decline: "
+          hl_group = "DiagnosticWarn"
+        elseif block_type == "tool" then
+          prefix = "▼ Tool: "
+          hl_group = "Special"
+        end
+
+        local indicator = prefix .. title
+        local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, target_row, 0, {
+          virt_lines = { { { indicator, hl_group } } },
+          virt_lines_above = true,
+        })
+
+        -- Update the cache entry with new extmark ID and metrics
+        self.collapsed_blocks_cache[id].extmark_id = extmark_id
+        self.collapsed_blocks_cache[id].height = height
+        self.collapsed_blocks_cache[id].row = target_row
+      end)
+
+      return previous_extmark_id
+    end
   end
 
-  -- 5. Resolve row coordinate and ensure it exists
+  -- 5. If collapsed, clear the old extmark before setting up the new one
+  if previous_extmark_id then
+    pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, previous_extmark_id)
+  end
+
+  -- 6. Resolve row coordinate and ensure it exists
   local extmark_id = nil
   self:run_programmatic_update(bufnr, function()
-    local target_row = row
+    local target_row = row or (existing and existing.row)
     if not target_row then
       local line_count = self.api.nvim_buf_line_count(bufnr)
       self.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, { "" })
@@ -130,7 +222,7 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
       end
     end
 
-    -- 6. Format collapsed line marker dynamically based on block_type
+    -- 7. Format collapsed line marker dynamically based on block_type
     local prefix = "▶ Thought: "
     local hl_group = "Comment"
 
@@ -153,13 +245,13 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
 
     local display_text = prefix .. title
 
-    -- 7. Anchor extmark with virtual text using overlay position
+    -- 8. Anchor extmark with virtual text using overlay position
     extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, target_row, 0, {
       virt_text = { { display_text, hl_group } },
       virt_text_pos = "overlay",
     })
 
-    -- 8. Cache extmark association
+    -- 9. Cache extmark association and row index
     self.collapsed_blocks_cache[id].extmark_id = extmark_id
     self.collapsed_blocks_cache[id].row = target_row
   end)
@@ -446,6 +538,9 @@ end
 
 --- Teardown the UI manager, cleaning up all registered extmarks.
 function UI:teardown()
+  -- Stop the animation timer wheel
+  self:stop_wheel()
+
   -- Clean up all cached extmarks
   for id, cached in pairs(self.collapsed_blocks_cache) do
     if self.api.nvim_buf_is_valid(cached.bufnr) then
@@ -453,6 +548,159 @@ function UI:teardown()
     end
   end
   self.collapsed_blocks_cache = {}
+end
+
+--- Starts a generic spinner instance
+--- @param bufnr integer
+--- @param key string Unique identifier (e.g., "thinking", "tool_exec_42", "bootstrap")
+--- @param opts table Configuration table
+function UI:start_spinner(bufnr, key, opts)
+  if not bufnr or not key or not opts then
+    error("[CodeSavantUI] start_spinner requires bufnr, key, and opts")
+  end
+
+  local registry_key = bufnr .. ":" .. key
+  if self.animation_wheel.registry[registry_key] then return end
+
+  -- Parse options
+  local preset = opts.type or "braille"
+  local frames = (preset == "custom" and opts.custom_frames) 
+                 or UI.CONSTANTS.SPINNER_STYLES[preset] 
+                 or UI.CONSTANTS.SPINNER_STYLES.braille
+
+  if not frames or #frames == 0 then
+    error("[CodeSavantUI] Invalid spinner style: " .. tostring(preset))
+  end
+
+  -- Create a tracker extmark to follow the line dynamically in O(1) time
+  local initial_row = type(opts.row) == "function" and opts.row() or opts.row
+  if not initial_row then
+    error("[CodeSavantUI] Spinner requires a valid row or dynamic row function")
+  end
+  local col = opts.col or 0
+  local tracker_extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, initial_row, col, {})
+
+  -- Register instance
+  self.animation_wheel.registry[registry_key] = {
+    bufnr = bufnr,
+    key = key,
+    frames = frames,
+    frame_idx = 1,
+    use_extmark = not not opts.use_extmark,
+    col = col,
+    extmark_id = tracker_extmark_id,
+    format_fn = opts.format_fn,
+  }
+
+  -- Ensure timer tick rate matches interval if configured
+  if opts.interval then
+    self.animation_wheel.tick_rate = opts.interval
+  end
+
+  -- Wake up the global timer wheel
+  self:ensure_wheel_running()
+end
+
+--- Stops a generic spinner instance and cleans up its resources
+--- @param bufnr integer
+--- @param key string
+function UI:stop_spinner(bufnr, key)
+  if not bufnr or not key then return end
+  local registry_key = bufnr .. ":" .. key
+  local inst = self.animation_wheel.registry[registry_key]
+  
+  if inst then
+    -- Clean up tracker/virtual extmark
+    if inst.extmark_id then
+      pcall(self.api.nvim_buf_del_extmark, inst.bufnr, self.namespace, inst.extmark_id)
+    end
+    self.animation_wheel.registry[registry_key] = nil
+  end
+end
+
+--- Ensures the global timer wheel is running
+function UI:ensure_wheel_running()
+  local wheel = self.animation_wheel
+  if wheel.timer then return end
+
+  local uv = vim.uv or vim.loop
+  wheel.timer = uv.new_timer()
+
+  wheel.timer:start(0, wheel.tick_rate, vim.schedule_wrap(function()
+    local active_count = 0
+
+    -- Iterate through the registry and apply updates
+    for reg_key, inst in pairs(wheel.registry) do
+      active_count = active_count + 1
+
+      if vim.api.nvim_buf_is_valid(inst.bufnr) then
+        -- 1. Resolve row in O(1) using Neovim's built-in extmark tracking
+        local pos = self.api.nvim_buf_get_extmark_by_id(inst.bufnr, self.namespace, inst.extmark_id, {})
+        
+        if pos and #pos > 0 then
+          local row = pos[1]
+          local is_valid_line = true
+          if not inst.use_extmark then
+            local lines = self.api.nvim_buf_get_lines(inst.bufnr, row, row + 1, false)
+            local line = lines[1] or ""
+            if not line:find("CodeSavant is thinking...", 1, true) then
+              is_valid_line = false
+            end
+          end
+
+          if is_valid_line then
+            local symbol = inst.frames[inst.frame_idx]
+            inst.frame_idx = (inst.frame_idx % #inst.frames) + 1
+
+            -- 2. Render efficiently
+            self:run_programmatic_update(inst.bufnr, function()
+              local representation = inst.format_fn(symbol)
+
+              if inst.use_extmark then
+                local virt_text = type(representation) == "table" and representation or { { representation, "Comment" } }
+                self.api.nvim_buf_set_extmark(inst.bufnr, self.namespace, row, inst.col or 0, {
+                  id = inst.extmark_id,
+                  virt_text = virt_text,
+                  virt_text_pos = "overlay",
+                })
+              else
+                local text = type(representation) == "string" and representation or symbol
+                self.api.nvim_buf_set_lines(inst.bufnr, row, row + 1, false, { text })
+                -- Re-anchor/reset the tracker extmark on the updated row so it doesn't shift or get lost
+                self.api.nvim_buf_set_extmark(inst.bufnr, self.namespace, row, inst.col or 0, {
+                  id = inst.extmark_id,
+                })
+              end
+            end)
+          else
+            -- Row content has changed or was deleted, auto-clean
+            self:stop_spinner(inst.bufnr, inst.key)
+          end
+        else
+          -- Row tracking was lost (line deleted), auto-clean
+          self:stop_spinner(inst.bufnr, inst.key)
+        end
+      else
+        -- Buffer closed, auto-clean
+        self:stop_spinner(inst.bufnr, inst.key)
+      end
+    end
+
+    -- If no spinners are active, sleep the timer to conserve 100% CPU resources
+    if active_count == 0 then
+      self:stop_wheel()
+    end
+  end))
+end
+
+--- Stops and cleans up the global timer wheel
+function UI:stop_wheel()
+  local wheel = self.animation_wheel
+  if wheel.timer then
+    wheel.timer:stop()
+    wheel.timer:close()
+    wheel.timer = nil
+  end
 end
 
 --- Module level static function forwarders to support both singleton and class usage patterns

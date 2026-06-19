@@ -3,7 +3,6 @@ import asyncio
 import sys
 from pathlib import Path
 
-from engine.constants import DEFAULT_SOCKET_PATH
 
 
 async def bootstrap_agent_cli() -> None:
@@ -89,6 +88,15 @@ async def bootstrap_agent_cli() -> None:
 
 def main() -> None:
     """Main entrypoint wrapper running the async bootstrap loop."""
+    import signal
+    def handle_sigterm(signum, frame):
+        print(f"Received signal {signum}. Exiting cleanly...", file=sys.stderr)
+        sys.exit(0)
+    try:
+        signal.signal(signal.SIGTERM, handle_sigterm)
+    except (ValueError, AttributeError):
+        pass
+
     try:
         asyncio.run(bootstrap_agent_cli())
     except KeyboardInterrupt:
