@@ -300,9 +300,10 @@ class LocalAgentExecutor:
                     for f in chunk.function_calls:
                         parts.append(
                             FunctionCallPart(
+                                id=uuid.uuid7(),
+                                call_id=f.id,
                                 name=f.name,
                                 args=f.args,
-                                id=f.id,
                                 thought_signature=chunk.thought_signature,
                             )
                         )
@@ -355,8 +356,19 @@ class LocalAgentExecutor:
         user_msg_parts = []
         for tr in outcome.tool_responses:
             fr = tr["functionResponse"]
+            part_id = uuid.uuid7()
+            call_id = fr.get("id") or ""
+            for p in parts:
+                if isinstance(p, FunctionCallPart) and p.call_id == call_id:
+                    part_id = p.id
+                    break
             user_msg_parts.append(
-                FunctionResponsePart(name=fr["name"], response=fr["response"])
+                FunctionResponsePart(
+                    id=part_id,
+                    call_id=call_id,
+                    name=fr["name"],
+                    response=fr["response"],
+                )
             )
 
         user_msg = ChatMessage(role=MessageRole.USER.value, parts=user_msg_parts)

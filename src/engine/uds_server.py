@@ -479,8 +479,26 @@ class UdsServer:
             max_depth=5,
         )
 
+        from engine.agents import AgentRegistry
+        from engine.subagents import AgentTool
+
+        system_agents_dir = Path(settings.system_agents_dir)
+        if not system_agents_dir.is_absolute():
+            package_root = Path(__file__).parent.resolve()
+            system_agents_dir = package_root / system_agents_dir
+
+        agent_registry = AgentRegistry(
+            search_paths=[state.workspace_path],
+            agent_extensions=settings.agent_extensions,
+            system_agents_dir=system_agents_dir,
+        )
+        await agent_registry.discover_agents()
+
         executor = LocalAgentExecutor(
-            definition=config, context_strategy=strategy, memory_manager=memory_manager
+            definition=config,
+            context_strategy=strategy,
+            memory_manager=memory_manager,
+            agent_registry=agent_registry,
         )
         executor.registry.register_tool(CompleteTaskTool())
         executor.registry.register_tool(ReadFileTool())
@@ -489,6 +507,14 @@ class UdsServer:
         executor.registry.register_tool(GlobTool())
         executor.registry.register_tool(GrepSearchTool())
         executor.registry.register_tool(ReplaceTool())
+
+        agent_tool = AgentTool(
+            agent_registry=agent_registry,
+            context_strategy=strategy,
+            tool_registry=executor.registry,
+            memory_manager=memory_manager,
+        )
+        executor.registry.register_tool(agent_tool)
 
         context = ExecutionContext(
             workspace_path=state.workspace_path,

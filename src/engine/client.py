@@ -154,7 +154,7 @@ class LiveGenAIClient(BaseGenAIClient):
                     parts.append(
                         types.Part(
                             function_call=types.FunctionCall(
-                                name=part.name, args=part.args, id=part.id
+                                name=part.name, args=part.args, id=part.call_id
                             ),
                             thought_signature=sig_bytes,
                         )

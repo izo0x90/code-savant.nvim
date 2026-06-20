@@ -28,6 +28,8 @@ async def test_settings_manager_precedence_cascade(tmp_path: Path):
         "context_filenames": ["GEMINI.md"],
         "global_context_dir": "~/.gemini",
         "session_storage_dir": ".code_savant/sessions",
+        "system_agents_dir": "prompts/agents",
+        "agent_extensions": [".agent.yaml", ".agent.yml", ".md"],
         "requires_approval": False,
         "providers": {},
     }
@@ -94,6 +96,8 @@ async def test_settings_manager_corrupted_json_fails_loudly(tmp_path: Path):
                 "context_filenames": ["GEMINI.md"],
                 "global_context_dir": "~/.gemini",
                 "session_storage_dir": ".code_savant/sessions",
+                "system_agents_dir": "prompts/agents",
+                "agent_extensions": [".agent.yaml", ".agent.yml", ".md"],
                 "requires_approval": False,
                 "providers": {},
             }
@@ -194,6 +198,8 @@ async def test_settings_manager_dump_default_settings(tmp_path: Path):
         "context_filenames": ["GEMINI.md"],
         "global_context_dir": "~/.gemini",
         "session_storage_dir": ".code_savant/sessions",
+        "system_agents_dir": "prompts/agents",
+        "agent_extensions": [".agent.yaml", ".agent.yml", ".md"],
         "requires_approval": False,
         "providers": {
             "gemini": {
@@ -252,6 +258,8 @@ async def test_session_storage_dir_expansion(tmp_path: Path):
         "context_filenames": ["GEMINI.md"],
         "global_context_dir": "~/.gemini",
         "session_storage_dir": "~/custom_sessions",
+        "system_agents_dir": "prompts/agents",
+        "agent_extensions": [".agent.yaml", ".agent.yml", ".md"],
         "requires_approval": False,
         "providers": {},
     }

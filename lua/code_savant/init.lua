@@ -382,7 +382,9 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
           if parsed.result and parsed.result.chat_history then
             local chat_history = parsed.result.chat_history
             local formatted_lines = {}
-            for _, msg in ipairs(chat_history) do
+            local blocks_to_render = {}
+
+            for msg_idx, msg in ipairs(chat_history) do
               local role = msg.role
               if msg.parts and #msg.parts > 0 then
                 if #formatted_lines > 0 then
@@ -400,18 +402,23 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
                     end
                   end
                 elseif role == "model" then
-                  for _, part in ipairs(msg.parts) do
-                    if part.thought then
-                      table.insert(formatted_lines, "<details>")
-                      table.insert(formatted_lines, "<summary>Thinking...</summary>")
+                  for part_idx, part in ipairs(msg.parts) do
+                    if part.type == "thought" then
+                      -- Insert an empty placeholder line to anchor the collapsible extmark
                       table.insert(formatted_lines, "")
-                      local thought_lines = vim.split(part.text, "\n", { plain = true })
-                      for _, line in ipairs(thought_lines) do
-                        table.insert(formatted_lines, line)
-                      end
-                      table.insert(formatted_lines, "")
-                      table.insert(formatted_lines, "</details>")
-                    elseif part.text then
+                      local row_idx = #formatted_lines -- 1-based index of the placeholder line
+
+                      local block_id = string.format("loaded_thought_%s_%d_%d", tostring(parsed.result.session_id), msg_idx, part_idx)
+                      local title = part.title or "Thinking..."
+                      local content = part.text or ""
+
+                      table.insert(blocks_to_render, {
+                        id = block_id,
+                        title = title,
+                        content = content,
+                        row = row_idx - 1 -- convert to 0-based row index for Neovim API
+                      })
+                    elseif part.type == "text" and part.text then
                       local content_lines = vim.split(part.text, "\n", { plain = true })
                       for _, line in ipairs(content_lines) do
                         table.insert(formatted_lines, line)
@@ -424,6 +431,11 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
 
             if #formatted_lines > 0 then
               vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, formatted_lines)
+            end
+
+            -- Now render all our collapsed blocks on their respective anchors!
+            for _, block in ipairs(blocks_to_render) do
+              UI:on_collapsed_block(block.id, "thought", block.title, block.content, bufnr, block.row)
             end
           end
 
@@ -1245,6 +1257,21 @@ function M.load_session_picker()
         if not choice then return end
         local selected = session_map[choice]
         if not selected then return end
+
+        -- 🛡️ Idempotent check: Prevent duplicate buffers for the same session!
+        local existing_bufnr = nil
+        local Network = require("code_savant.network")
+        for bufnr, conn in pairs(Network._connections) do
+          if conn.session_id == selected.session_id then
+            existing_bufnr = bufnr
+            break
+          end
+        end
+
+        if existing_bufnr then
+          M.mount_session(existing_bufnr)
+          return
+        end
 
         local result = M.create_chat_buffer()
         -- Load connection and stream session history in the active split window

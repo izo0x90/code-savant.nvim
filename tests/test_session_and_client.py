@@ -99,9 +99,9 @@ async def run_session_tests(tmp_dir: str):
     
     import json
     lines = [
-        json.dumps({"role": "user", "parts": [{"text": "First message"}]}),
-        json.dumps({"role": "model", "parts": [{"text": "Second message"}]}),
-        json.dumps({"type": "SetDelta", "index": 1, "message": {"role": "model", "parts": [{"text": "Updated second message"}]}}),
+        json.dumps({"role": "user", "parts": [{"type": "text", "text": "First message"}]}),
+        json.dumps({"role": "model", "parts": [{"type": "text", "text": "Second message"}]}),
+        json.dumps({"type": "SetDelta", "index": 1, "message": {"role": "model", "parts": [{"type": "text", "text": "Updated second message"}]}}),
         json.dumps({"type": "RewindDelta", "count": 1})
     ]
     with open(playback_file, "w", encoding="utf-8") as f:
@@ -135,7 +135,7 @@ async def run_session_tests(tmp_dir: str):
     corrupt_sess_id = uuid.uuid7()
     corrupt_file = Path(tmp_dir) / f"{str(corrupt_sess_id)}{SESSION_FILE_SUFFIX}"
     corrupt_lines = [
-        json.dumps({"role": "user", "parts": [{"text": "Valid message"}]}),
+        json.dumps({"role": "user", "parts": [{"type": "text", "text": "Valid message"}]}),
         "{invalid-json-here}"
     ]
     with open(corrupt_file, "w", encoding="utf-8") as f:

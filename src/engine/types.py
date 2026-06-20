@@ -19,10 +19,17 @@ from typing import (
     Protocol,
     AsyncIterator,
     Literal,
+    Annotated,
 )
 import time
 import uuid
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, AliasChoices
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    AliasChoices,
+)
 
 T = TypeVar("T")
 
@@ -181,6 +188,7 @@ class ThoughtChunk(BaseModel):
     """Reused directly as a message part in the session database!"""
 
     model_config = ConfigDict(frozen=True, slots=True)
+    type: Literal["thought"] = "thought"
     text: str
     title: Optional[str] = None
     thought: Literal[True] = True
@@ -190,6 +198,7 @@ class TextPart(BaseModel):
     """Immutable representation of a text-based turn segment."""
 
     model_config = ConfigDict(frozen=True, slots=True)
+    type: Literal["text"] = "text"
     text: str
 
 
@@ -200,9 +209,11 @@ class FunctionCallPart(BaseModel):
     """
 
     model_config = ConfigDict(frozen=True, slots=True)
+    type: Literal["function_call"] = "function_call"
+    id: uuid.UUID = Field(default_factory=uuid.uuid7)  # 🌟 Proper UUID!
+    call_id: str  # 🔗 LLM model-generated call ID (e.g. "call_abc")!
     name: str
     args: Dict[str, JsonValue]
-    id: str
     thought_signature: Optional[str] = None
 
 
@@ -213,42 +224,21 @@ class FunctionResponsePart(BaseModel):
     """
 
     model_config = ConfigDict(frozen=True, slots=True)
+    type: Literal["function_response"] = "function_response"
+    id: uuid.UUID = Field(default_factory=uuid.uuid7)  # 🌟 Proper UUID!
+    call_id: str  # 🔗 Matches paired FunctionCallPart.call_id!
     name: str
     response: JsonValue
 
 
-class ToolCallPart(BaseModel):
-    """
-    Immutable representation of an LLM tool invocation request.
-    Strictly type-restricted to enforce purely serializable JSON values.
-    """
-
-    model_config = ConfigDict(frozen=True, slots=True)
-    name: str
-    args: Dict[str, JsonValue]
-    id: str
-    thought_signature: Optional[str] = None
-
-
-class ToolResultPart(BaseModel):
-    """
-    Immutable representation of a tool execution outcome returned to the LLM.
-    Guarantees zero leakage of non-serializable runtime handles.
-    """
-
-    model_config = ConfigDict(frozen=True, slots=True)
-    name: str
-    response: JsonValue
-    id: Optional[str] = None
-
-
-MessagePart = Union[
-    ThoughtChunk,
-    TextPart,
-    FunctionCallPart,
-    FunctionResponsePart,
-    ToolCallPart,
-    ToolResultPart,
+MessagePart = Annotated[
+    Union[
+        ThoughtChunk,
+        TextPart,
+        FunctionCallPart,
+        FunctionResponsePart,
+    ],
+    Field(discriminator="type"),
 ]
 
 

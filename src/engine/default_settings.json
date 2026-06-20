@@ -5,6 +5,8 @@
   "context_filenames": ["GEMINI.md"],
   "global_context_dir": "~/.gemini",
   "session_storage_dir": ".code_savant/sessions",
+  "system_agents_dir": "prompts/agents",
+  "agent_extensions": [".agent.yaml", ".agent.yml", ".md"],
   "requires_approval": true,
   "strategy_config": {
     "default": {

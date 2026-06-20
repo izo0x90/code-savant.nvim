@@ -405,7 +405,10 @@ class ToolOutputTruncationService:
                     # Store as a dictionary to be completely valid JsonValue
                     new_parts.append(
                         FunctionResponsePart(
-                            name=part.name, response={"output": truncated_str}
+                            id=part.id,
+                            call_id=part.call_id,
+                            name=part.name,
+                            response={"output": truncated_str},
                         )
                     )
                 else:

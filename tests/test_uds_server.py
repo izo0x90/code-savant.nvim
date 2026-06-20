@@ -28,6 +28,8 @@ async def setup_test_dependencies(tmp_path: Path):
         "context_filenames": ["GEMINI.md"],
         "global_context_dir": str(tmp_path / "global_gemini"),
         "session_storage_dir": ".code_savant/sessions",
+        "system_agents_dir": "prompts/agents",
+        "agent_extensions": [".agent.yaml", ".agent.yml", ".md"],
         "requires_approval": False,
         "providers": {"gemini": {"api_key_env_var": "GEMINI_API_KEY"}},
     }

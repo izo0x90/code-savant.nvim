@@ -175,6 +175,14 @@ class EngineDaemonSettings(BaseSettings):
         ...,
         description="The directory where active and historical session files are stored.",
     )
+    system_agents_dir: str = Field(
+        ...,
+        description="Path to the default system subagent configurations directory.",
+    )
+    agent_extensions: List[str] = Field(
+        ...,
+        description="Allowed file extensions representing valid subagent configurations.",
+    )
     requires_approval: bool = Field(
         ..., description="Whether tool execution actions require human confirmation."
     )
@@ -195,6 +203,12 @@ class EngineDaemonSettings(BaseSettings):
         """Type-safe path expansion utilizing Pydantic validator instead of raw dict logic."""
         return str(Path(v).expanduser())
 
+    @field_validator("system_agents_dir", mode="after")
+    @classmethod
+    def expand_system_agents_dir(cls, v: str) -> str:
+        """Type-safe path expansion utilizing Pydantic validator instead of raw dict logic."""
+        return str(Path(v).expanduser())
+
 
 class PartialDaemonSettings(BaseModel):
     """
@@ -209,6 +223,8 @@ class PartialDaemonSettings(BaseModel):
     context_filenames: Optional[List[str]] = None
     global_context_dir: Optional[str] = None
     session_storage_dir: Optional[str] = None
+    system_agents_dir: Optional[str] = None
+    agent_extensions: Optional[List[str]] = None
     requires_approval: Optional[bool] = None
     strategy_config: Optional[Dict[str, Dict[str, Any]]] = None
 
