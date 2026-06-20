@@ -6,9 +6,12 @@
 local M = {}
 M._has_render_markdown = false
 M._render_markdown_api = nil
+M._has_telescope = false
+M._telescope_api = nil
 
 local Network = require("code_savant.network")
 local UI = require("code_savant.ui").get_instance()
+local Layout = require("code_savant.layout")
 
 --- Centralized Constants for Neovim plugin options and commands
 --- Adheres to Guideline 2: No magic values or inline literals.
@@ -41,6 +44,8 @@ local DEFAULT_CONFIG = {
   spawn_split = "vsplit", -- Options: "vsplit" (vertical), "split" (horizontal), "tabnew" (new tab), "edit" (current window)
   perf_debug = false, -- Options: true to run under viztracer, false for standard execution
   perf_trace_file = ".code_savant/perf_trace.json", -- Target location for the visualization report
+  input_height = 3,
+  sidebar_width_pct = 0.5,
   integrations = {
     render_markdown = "auto", -- Options: "auto" (detects & auto-manages), "on" (forces), "off" (disabled)
   },
@@ -60,6 +65,7 @@ local DEFAULT_CONFIG = {
     approve = "a",          -- Key to approve tool confirmation requests
     decline = "d",          -- Key to decline tool confirmation requests
     toggle_render = "<leader>mr", -- Key to manually toggle render-markdown inside chat windows
+    balance = "<leader>cb", -- Key to restore standard layout splits instantly
   }
 }
 
@@ -815,6 +821,29 @@ local function apply_buffer_config(history_bufnr, input_bufnr)
     vim.keymap.set("n", keymaps.toggle_render, function() M.toggle_render_markdown(history_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Toggle Render-Markdown" })
   end
 
+  -- Bind manual layout balancing keymaps if configured
+  if keymaps.balance then
+    vim.keymap.set("n", keymaps.balance, function() M.restore_layout_balance() end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Balance Layout Splits" })
+    vim.keymap.set("n", keymaps.balance, function() M.restore_layout_balance() end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Balance Layout Splits" })
+  end
+
+  -- Bind C-level expand("<cfile>") optimized navigation keymaps on History Buffer
+  vim.keymap.set("n", "gf", function()
+    require("code_savant.navigation").jump_to_file_at_cursor("edit")
+  end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Go to File" })
+
+  vim.keymap.set("n", "<C-w>f", function()
+    require("code_savant.navigation").jump_to_file_at_cursor("split")
+  end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Go to File (Split)" })
+
+  vim.keymap.set("n", "<C-w>gf", function()
+    require("code_savant.navigation").jump_to_file_at_cursor("tab")
+  end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Go to File (Tab)" })
+
+  vim.keymap.set("n", "gV", function()
+    require("code_savant.navigation").jump_to_file_at_cursor("vsplit")
+  end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Go to File (VSplit)" })
+
   -- Add local cnoreabbrevs to trap buffer commands
   local function setup_abbrevs(buf)
     vim.api.nvim_buf_call(buf, function()
@@ -931,164 +960,13 @@ local function get_active_sessions()
   return sessions
 end
 
---- Scans the current tabpage for any active CodeSavant layout split windows.
---- @return integer|nil hist_win, integer|nil inp_win
-local function find_visible_layout()
-  local current_tab = vim.api.nvim_get_current_tabpage()
-  local hist_win, inp_win = nil, nil
-  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(current_tab)) do
-    if vim.api.nvim_win_is_valid(win) then
-      local buf = vim.api.nvim_win_get_buf(win)
-      local ft = vim.bo[buf].filetype
-      if ft == "code_savant_chat" then
-        hist_win = win
-      elseif ft == "code_savant_input" then
-        inp_win = win
-      end
-    end
-  end
-  return hist_win, inp_win
-end
-
-
 --- Mounts a history buffer and its linked partner input buffer into the layout.
 --- If active CodeSavant split windows are already visible, they are safely reused in-place.
 --- Otherwise, it creates the initial split windows and applies the locked winfixbuf protection.
 --- @param history_bufnr integer
 --- @param target_winid? integer
 function M.mount_session(history_bufnr, target_winid)
-  if not vim.api.nvim_buf_is_valid(history_bufnr) then
-    error("[CodeSavant Error] Invalid history buffer provided for mounting")
-  end
-
-  local input_bufnr = vim.b[history_bufnr].partner_buf
-  if not input_bufnr or not vim.api.nvim_buf_is_valid(input_bufnr) then
-    error("[CodeSavant Error] Partner input buffer not found for history buffer " .. tostring(history_bufnr))
-  end
-
-  -- Dynamically restore options, variables, abbreviations and keymaps (survives unloading on ZQ)
-  apply_buffer_config(history_bufnr, input_bufnr)
-
-  -- 1. Check if a CodeSavant window split layout is already visible on the current tabpage.
-  local hist_win, inp_win = find_visible_layout()
-
-  if hist_win and inp_win then
-    -- Reuse existing visible windows in-place!
-    safe_set_buf(hist_win, history_bufnr)
-    safe_set_buf(inp_win, input_bufnr)
-
-    vim.b[history_bufnr].partner_win = inp_win
-    vim.b[input_bufnr].partner_win = hist_win
-
-    vim.api.nvim_set_current_win(inp_win)
-    return
-  end
-
-  local spawn_split = M.config.spawn_split or "vsplit"
-  local new_hist_win, new_inp_win
-
-  -- Standard full mount: No visible/partial layout exists.
-  -- Cleanly close any leftover windows from other sessions to avoid leaks
-  local current_tab = vim.api.nvim_get_current_tabpage()
-  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(current_tab)) do
-    if vim.api.nvim_win_is_valid(win) then
-      local buf = vim.api.nvim_win_get_buf(win)
-      local ft = vim.bo[buf].filetype
-      if ft == "code_savant_chat" or ft == "code_savant_input" then
-        pcall(vim.api.nvim_win_close, win, true)
-      end
-    end
-  end
-
-  local target_win = target_winid or vim.api.nvim_get_current_win()
-  if not vim.api.nvim_win_is_valid(target_win) then
-    target_win = vim.api.nvim_get_current_win()
-  end
-
-  if spawn_split == "tabnew" then
-    vim.api.nvim_cmd({ cmd = "tabnew" }, {})
-    target_win = vim.api.nvim_get_current_win()
-    new_hist_win = target_win
-  elseif spawn_split == "edit" then
-    new_hist_win = target_win
-  else
-    local direction = "right"
-    if spawn_split == "split" or spawn_split == "hsplit" then
-      direction = "below"
-    end
-    new_hist_win = vim.api.nvim_open_win(history_bufnr, false, {
-      win = target_win,
-      split = direction,
-    })
-  end
-
-  -- Create input window programmatically below new_hist_win with input buffer pre-set!
-  new_inp_win = vim.api.nvim_open_win(input_bufnr, false, {
-    win = new_hist_win,
-    split = "below",
-    height = 3,
-  })
-
-  -- Style the newly created input split window
-  vim.api.nvim_win_set_height(new_inp_win, 3)
-  vim.wo[new_inp_win].winfixheight = true
-  vim.wo[new_inp_win].number = false
-  vim.wo[new_inp_win].relativenumber = false
-
-  -- Apply horizontal width lock-down if spawned as a sidebar panel
-  if spawn_split == "vsplit" then
-    vim.wo[new_hist_win].winfixwidth = true
-    vim.wo[new_inp_win].winfixwidth = true
-  end
-
-  -- Bind partner metadata
-  vim.b[history_bufnr].partner_win = new_inp_win
-  vim.b[input_bufnr].partner_win = new_hist_win
-
-  -- Set buffers and activate winfixbuf AFTER all splits are fully done!
-  safe_set_buf(new_hist_win, history_bufnr)
-  safe_set_buf(new_inp_win, input_bufnr)
-
-  -- Create clean WinClosed window-linked closing autocommands.
-  -- This ensures closing either window (e.g. via <C-w>q, :q, :close) automatically closes the partner window,
-  -- but leaves the buffers alive and loaded in memory for toggle/reuse.
-  local win_group_name = "CodeSavantWinSync_" .. tostring(new_hist_win) .. "_" .. tostring(new_inp_win)
-  local win_group = vim.api.nvim_create_augroup(win_group_name, { clear = true })
-
-  local closed_in_progress = false
-
-  vim.api.nvim_create_autocmd("WinClosed", {
-    pattern = tostring(new_hist_win),
-    group = win_group,
-    callback = function()
-      if closed_in_progress then return end
-      closed_in_progress = true
-      vim.schedule(function()
-        if vim.api.nvim_win_is_valid(new_inp_win) then
-          pcall(vim.api.nvim_win_close, new_inp_win, true)
-        end
-        pcall(vim.api.nvim_del_augroup_by_id, win_group)
-      end)
-    end,
-  })
-
-  vim.api.nvim_create_autocmd("WinClosed", {
-    pattern = tostring(new_inp_win),
-    group = win_group,
-    callback = function()
-      if closed_in_progress then return end
-      closed_in_progress = true
-      vim.schedule(function()
-        if vim.api.nvim_win_is_valid(new_hist_win) then
-          pcall(vim.api.nvim_win_close, new_hist_win, true)
-        end
-        pcall(vim.api.nvim_del_augroup_by_id, win_group)
-      end)
-    end,
-  })
-
-  -- Focus the input window for typing
-  vim.api.nvim_set_current_win(new_inp_win)
+  Layout.mount_session(history_bufnr, target_winid, apply_buffer_config)
 end
 
 --- Cycles between active CodeSavant chat sessions.
@@ -1135,6 +1013,11 @@ function M.cycle_session(direction)
 
   local target_buf = sessions[target_idx]
   M.mount_session(target_buf)
+end
+
+--- Restores Code Savant split windows to their default configured dimensions
+function M.restore_layout_balance()
+  Layout.restore_layout_balance()
 end
 
 --- Renders a fuzzy session switching picker (using Telescope if available, or vim.ui.select).
@@ -1357,6 +1240,13 @@ function M.setup(opts)
     M._render_markdown_api = rm
   end
 
+  -- One-time boot check for Telescope (Zero repeating lookup costs)
+  local t_ok, telescope = pcall(require, "telescope.builtin")
+  M._has_telescope = t_ok
+  if t_ok then
+    M._telescope_api = telescope
+  end
+
   -- Native Tree-sitter markdown injection (instant syntax highlights)
   pcall(vim.treesitter.language.register, "markdown", CONSTANTS.FILETYPE)
 
@@ -1403,6 +1293,14 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("CodeSavantPrevSession", function()
     M.cycle_session("prev")
   end, { force = true })
+
+  vim.api.nvim_create_user_command("CodeSavantBalance", function()
+    M.restore_layout_balance()
+  end, { force = true })
+
+  -- Initialize layout engine and register split interception
+  Layout.init(M.config)
+  Layout.setup_split_interception()
 
   -- Register graceful cleanup autocommand to prevent hanging on exit
   local group = vim.api.nvim_create_augroup("CodeSavantCleanup", { clear = true })
