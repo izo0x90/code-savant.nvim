@@ -117,9 +117,9 @@ local input_keymaps = vim.api.nvim_buf_get_keymap(session1.input_bufnr, "n")
 local found_cycle = false
 local found_submit_normal = false
 for _, map in ipairs(input_keymaps) do
-  if map.desc and map.desc:match("CodeSavant Next Session Override") then
+  if map.desc and map.desc:match("CodeSavant Cycle to next session") then
     found_cycle = true
-  elseif map.desc and map.desc:match("CodeSavant Submit Prompt") and map.lhs == "<S-CR>" then
+  elseif map.desc and map.desc:match("CodeSavant Submit prompt") and map.lhs == "<S-CR>" then
     found_submit_normal = true
   end
 end
@@ -127,7 +127,7 @@ end
 local input_keymaps_i = vim.api.nvim_buf_get_keymap(session1.input_bufnr, "i")
 local found_submit_insert = false
 for _, map in ipairs(input_keymaps_i) do
-  if map.desc and map.desc:match("CodeSavant Submit Prompt") and map.lhs == "<S-CR>" then
+  if map.desc and map.desc:match("CodeSavant Submit prompt") and map.lhs == "<S-CR>" then
     found_submit_insert = true
     break
   end

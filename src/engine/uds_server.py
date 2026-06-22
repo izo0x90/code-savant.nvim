@@ -540,11 +540,13 @@ class UdsServer:
                     f"Executor exception in session {session_id}: {e}", exc_info=True
                 )
                 try:
-                    # Stream the error details directly as a telemetry message
-                    err_msg = f"\n[CodeSavant Error] Executor crashed: {e}\n"
+                    # Stream the error details directly as a structured telemetry/error notification
                     notification = JsonRpcCodec.encode_notification(
-                        method="telemetry/message",
-                        params={"session_id": str(session_id), "text": err_msg},
+                        method="telemetry/error",
+                        params={
+                            "session_id": str(session_id),
+                            "message": f"Executor crashed: {e}"
+                        },
                     )
                     writer.write(notification)
 

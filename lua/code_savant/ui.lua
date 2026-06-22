@@ -23,6 +23,94 @@ UI.CONSTANTS = {
   },
 }
 
+UI.MESSAGE_REGISTRY = {
+  -- Standard Continuous Flow Types
+  user_prompt = {
+    collapsible = false,
+    header = "User:",
+    indent = "  ",
+    trailer = { "", "◀ CodeSavant is thinking...", "" },
+    spinner_to_start = "thinking",
+  },
+  user_steering = {
+    collapsible = false,
+    header = "User (Steering Directive):",
+    indent = "  ",
+    trailer = {},
+  },
+  agent_stream = {
+    collapsible = false,
+    spinner_to_stop = "thinking",
+    is_streaming = true,
+  },
+  system_error = {
+    collapsible = false,
+    header = "Error:",
+    indent = "  ",
+    hl_group = "DiagnosticError",
+    spinner_to_stop = "thinking",
+    clear_thinking_line = true,
+  },
+
+  -- Pure State Transition Types (Pure state changes, write no lines to the buffer)
+  status_idle = {
+    collapsible = false,
+    spinner_to_stop = "thinking",
+    clear_thinking_line = true,
+    no_write = true,
+  },
+  cancel = {
+    collapsible = false,
+    spinner_to_stop = "thinking",
+    clear_thinking_line = true,
+    no_write = true,
+  },
+
+  -- Collapsible Block Types (Routed to collapsible handler)
+  thought = {
+    collapsible = true,
+    block_type = "thought",
+    prefix_collapsed = "▶ Thought: ",
+    prefix_expanded = "▼ Thought: ",
+    hl_group = "Comment",
+  },
+  tool = {
+    collapsible = true,
+    block_type = "tool",
+    prefix_collapsed = "▶ Tool: ",
+    prefix_expanded = "▼ Tool: ",
+    hl_group = "Special",
+  },
+  confirmation = {
+    collapsible = true,
+    block_type = "confirmation",
+    prefix_collapsed = "▶ Approve/Decline: ",
+    prefix_expanded = "▼ Approve/Decline: ",
+    hl_group = "DiagnosticWarn",
+  },
+  warning = {
+    collapsible = true,
+    block_type = "warning",
+    prefix_collapsed = "▶ Warning: ",
+    prefix_expanded = "▼ Warning: ",
+    hl_group = "DiagnosticWarn",
+  },
+  steering = {
+    collapsible = true,
+    block_type = "steering",
+    prefix_collapsed = "▶ Steering: ",
+    prefix_expanded = "▼ Steering: ",
+    hl_group = "Identifier",
+  },
+  error = {
+    collapsible = true,
+    block_type = "error",
+    prefix_collapsed = "▶ Error: ",
+    prefix_expanded = "▼ Error: ",
+    hl_group = "DiagnosticError",
+  }
+}
+
 -- Default module-level instance for simple access
 local default_instance = nil
 
@@ -162,27 +250,9 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
         end
 
         -- Re-anchor the expanded indicator above the updated lines
-        local prefix = "▼ Thought: "
-        local hl_group = "Comment"
-
-        if block_type == "warning" then
-          prefix = "▼ Warning: "
-          hl_group = "DiagnosticWarn"
-        elseif block_type == "steering" then
-          prefix = "▼ Steering: "
-          hl_group = "Identifier"
-        elseif block_type == "error" then
-          prefix = "▼ Error: "
-          hl_group = "DiagnosticError"
-        elseif block_type == "confirmation" then
-          prefix = "▼ Approve/Decline: "
-          hl_group = "DiagnosticWarn"
-        elseif block_type == "tool" then
-          prefix = "▼ Tool: "
-          hl_group = "Special"
-        end
-
-        local indicator = prefix .. title
+        local block_config = self.MESSAGE_REGISTRY[block_type] or self.MESSAGE_REGISTRY["thought"]
+        local indicator = block_config.prefix_expanded .. title
+        local hl_group = block_config.hl_group
         local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, target_row, 0, {
           virt_lines = { { { indicator, hl_group } } },
           virt_lines_above = true,
@@ -223,27 +293,9 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
     end
 
     -- 7. Format collapsed line marker dynamically based on block_type
-    local prefix = "▶ Thought: "
-    local hl_group = "Comment"
-
-    if block_type == "warning" then
-      prefix = "▶ Warning: "
-      hl_group = "DiagnosticWarn"
-    elseif block_type == "steering" then
-      prefix = "▶ Steering: "
-      hl_group = "Identifier"
-    elseif block_type == "error" then
-      prefix = "▶ Error: "
-      hl_group = "DiagnosticError"
-    elseif block_type == "confirmation" then
-      prefix = "▶ Approve/Decline: "
-      hl_group = "DiagnosticWarn"
-    elseif block_type == "tool" then
-      prefix = "▶ Tool: "
-      hl_group = "Special"
-    end
-
-    local display_text = prefix .. title
+    local block_config = self.MESSAGE_REGISTRY[block_type] or self.MESSAGE_REGISTRY["thought"]
+    local display_text = block_config.prefix_collapsed .. title
+    local hl_group = block_config.hl_group
 
     -- 8. Anchor extmark with virtual text using overlay position
     extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, target_row, 0, {
@@ -751,6 +803,170 @@ function UI.open_in_float(self, opts)
     return inst:_open_in_float_impl(actual_opts)
   else
     return self:_open_in_float_impl(opts)
+  end
+end
+
+-- Local helper to get current 0-indexed row of thinking extmark
+local function get_thinking_row(self, bufnr)
+  if not self.thinking_extmark_id then return nil end
+  local ok, pos = pcall(self.api.nvim_buf_get_extmark_by_id, bufnr, self.namespace, self.thinking_extmark_id, {})
+  if ok and pos and #pos > 0 then
+    return pos[1]
+  end
+  return nil
+end
+
+--- Singly-Unified Entrypoint for all Chat Buffer Rendering
+function UI:_render_message_impl(bufnr, msg_type, data)
+  local config = self.MESSAGE_REGISTRY[msg_type]
+  if not config then
+    error("[CodeSavantUI] Invalid message type registered: " .. tostring(msg_type))
+  end
+
+  if config.collapsible then
+    -- A. Collapsible Routing Path
+    local payload = {
+      id = data.id,
+      title = data.title,
+      content = data.content,
+    }
+    
+    local cached = self.collapsed_blocks_cache[payload.id]
+    if not cached then
+      local thinking_row = get_thinking_row(self, bufnr)
+      if thinking_row then
+        self:run_programmatic_update(bufnr, function()
+          self.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row, false, { "" })
+        end)
+        payload.row = thinking_row
+      else
+        local line_count = self.api.nvim_buf_line_count(bufnr)
+        payload.row = math.max(0, line_count - 1)
+        self:run_programmatic_update(bufnr, function()
+          self.api.nvim_buf_set_lines(bufnr, payload.row, payload.row, false, { "" })
+        end)
+      end
+    else
+      payload.row = cached.row
+    end
+
+    return self:_render_collapsible_handler(bufnr, config.block_type, payload)
+  else
+    -- B. Standard Inline Routing Path
+    return self:_render_standard_handler(bufnr, msg_type, data)
+  end
+end
+
+--- Standard Continuous Text Handler
+function UI:_render_standard_handler(bufnr, msg_type, data)
+  local config = self.MESSAGE_REGISTRY[msg_type]
+
+  -- 1. Automatically stop spinner if configured
+  if config.spinner_to_stop then
+    self:stop_spinner(bufnr, config.spinner_to_stop)
+  end
+
+  -- 2. Automatically clean up thinking placeholder row and extmark
+  if config.clear_thinking_line then
+    local thinking_row = get_thinking_row(self, bufnr)
+    if thinking_row then
+      self:run_programmatic_update(bufnr, function()
+        self.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row + 1, false, {})
+      end)
+    end
+    if self.thinking_extmark_id then
+      pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, self.thinking_extmark_id)
+      self.thinking_extmark_id = nil
+    end
+  end
+
+  -- 3. If pure state transition, we exit early
+  if config.no_write then
+    return
+  end
+
+  -- 4. Compile text block content
+  local lines = type(data) == "string" and vim.split(data, "\n", { plain = true }) or data
+  local text_to_write = {}
+  if config.header then
+    table.insert(text_to_write, config.header)
+  end
+  local indent = config.indent or ""
+  for _, line in ipairs(lines) do
+    table.insert(text_to_write, indent .. line)
+  end
+  if config.trailer then
+    for _, t_line in ipairs(config.trailer) do
+      table.insert(text_to_write, t_line)
+    end
+  end
+
+  -- 5. Write text block atomically to buffer
+  self:run_programmatic_update(bufnr, function()
+    local line_count = self.api.nvim_buf_line_count(bufnr)
+
+    if config.is_streaming then
+      local thinking_row = get_thinking_row(self, bufnr)
+      if thinking_row then
+        self.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row + 1, false, text_to_write)
+      else
+        local target_row = math.max(0, line_count - 1)
+        self.api.nvim_buf_set_lines(bufnr, target_row, target_row, false, text_to_write)
+      end
+    else
+      local final_lines = {}
+      if line_count > 1 or (line_count == 1 and self.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] ~= "") then
+        table.insert(final_lines, "")
+      end
+      for _, l in ipairs(text_to_write) do
+        table.insert(final_lines, l)
+      end
+
+      local insert_start = (line_count == 1 and self.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] == "") and 0 or line_count
+      self.api.nvim_buf_set_lines(bufnr, insert_start, -1, false, final_lines)
+
+      -- 6. Anchor thinking tracking extmark on placeholder row
+      if config.trailer then
+        local new_line_count = self.api.nvim_buf_line_count(bufnr)
+        local trailer_row = new_line_count - 2
+        self.thinking_extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, trailer_row, 0, {})
+      end
+    end
+
+    -- Auto scroll window view
+    local winids = vim.fn.win_findbuf(bufnr)
+    if winids and #winids > 0 then
+      pcall(self.api.nvim_win_set_cursor, winids[1], { self.api.nvim_buf_line_count(bufnr), 0 })
+    end
+  end)
+
+  -- 7. Automatically start spinner if configured
+  if config.spinner_to_start then
+    local spinner_opt = require("code_savant").config.spinner or {}
+    self:start_spinner(bufnr, config.spinner_to_start, {
+      type = spinner_opt.type,
+      custom_frames = spinner_opt.custom_frames,
+      interval = spinner_opt.interval,
+      use_extmark = true,
+      col = 4,
+      row = function() return get_thinking_row(self, bufnr) end,
+      format_fn = function(symbol) return { { symbol, "Special" } } end,
+    })
+  end
+end
+
+--- Collapsible Block Delegation Handler
+function UI:_render_collapsible_handler(bufnr, block_type, payload)
+  return self:_on_collapsed_block_impl(payload.id, block_type, payload.title, payload.content, bufnr, payload.row)
+end
+
+--- Module level static function forwarders to support both singleton and class usage patterns
+function UI.render_message(self, bufnr, msg_type, data)
+  if type(self) ~= "table" or self.collapsed_blocks_cache == nil then
+    local actual_bufnr, actual_msg_type, actual_data = self, bufnr, msg_type
+    return UI.get_instance():_render_message_impl(actual_bufnr, actual_msg_type, actual_data)
+  else
+    return self:_render_message_impl(bufnr, msg_type, data)
   end
 end
 

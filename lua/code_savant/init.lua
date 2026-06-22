@@ -13,6 +13,12 @@ local Network = require("code_savant.network")
 local UI = require("code_savant.ui").get_instance()
 local Layout = require("code_savant.layout")
 
+local ERROR_PREFIX = "[CodeSavant Error] "
+
+local function notify_err(msg)
+  vim.notify(ERROR_PREFIX .. msg, vim.log.levels.ERROR)
+end
+
 --- Centralized Constants for Neovim plugin options and commands
 --- Adheres to Guideline 2: No magic values or inline literals.
 local CONSTANTS = {
@@ -55,18 +61,18 @@ local DEFAULT_CONFIG = {
     interval = 100,
   },
   keymaps = {
-    expand = "<CR>",  -- Key to expand collapsed virtual thought blocks
-    submit = "<CR>",  -- Key to submit prompt lines at the bottom of the buffer
-    submit_alt = "<S-CR>", -- Alternative submission (e.g., Shift+Enter) in any mode
-    next_session = "<S-L>", -- Local normal-mode cycle forward
-    prev_session = "<S-H>", -- Local normal-mode cycle backward
-    open_buffer = "gO",     -- Key to open thought space in a new buffer split
-    open_float = "K",       -- Key to open thought space in a floating window
-    cancel = "<C-c>",       -- Key to cancel/abort outstanding agent runs
-    approve = "a",          -- Key to approve tool confirmation requests
-    decline = "d",          -- Key to decline tool confirmation requests
-    toggle_render = "<leader>mr", -- Key to manually toggle render-markdown inside chat windows
-    balance = "<leader>cb", -- Key to restore standard layout splits instantly
+    expand = { key = "<CR>", desc = "Expand collapsed virtual blocks" },
+    submit = { key = "<CR>", desc = "Submit prompt" },
+    submit_alt = { key = "<S-CR>", desc = "Submit prompt (Alternative)" },
+    next_session = { key = "<S-L>", desc = "Cycle to next session" },
+    prev_session = { key = "<S-H>", desc = "Cycle to previous session" },
+    open_buffer = { key = "gO", desc = "Open block in new buffer split" },
+    open_float = { key = "K", desc = "Open block in floating window" },
+    cancel = { key = "<C-c>", desc = "Abort active agent run" },
+    approve = { key = "a", desc = "Approve tool confirmation" },
+    decline = { key = "d", desc = "Decline tool confirmation" },
+    toggle_render = { key = "<leader>sr", desc = "Toggle render-markdown" },
+    balance = { key = "<leader>sb", desc = "Balance layout splits" },
   }
 }
 
@@ -123,7 +129,7 @@ function M.bootstrap_if_needed()
       if exit_code == 0 then
         vim.notify("[CodeSavant] Self-bootstrapping completed successfully!", vim.log.levels.INFO)
       else
-        vim.notify("[CodeSavant Error] Self-bootstrapping 'uv sync' failed with code: " .. tostring(exit_code), vim.log.levels.ERROR)
+        notify_err("Self-bootstrapping 'uv sync' failed with code: " .. tostring(exit_code))
       end
     end
   })
@@ -317,6 +323,14 @@ function M.stop_daemon()
 end
 
 local function find_thinking_line(bufnr)
+  -- Left for backwards compatibility if needed, but resolved via C-level extmarks dynamically
+  local UI_inst = UI.get_instance()
+  if UI_inst.thinking_extmark_id then
+    local ok, pos = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, UI_inst.namespace, UI_inst.thinking_extmark_id, {})
+    if ok and pos and #pos > 0 then
+      return pos[1]
+    end
+  end
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   for i, line in ipairs(lines) do
     if line:find("CodeSavant is thinking...", 1, true) then
@@ -369,19 +383,13 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
         UI:run_programmatic_update(bufnr, function()
           -- Handle daemon/executor error frames cleanly
           if parsed.error then
-            UI:stop_spinner(bufnr, "thinking")
-            local daemon_err_msg = string.format("[CodeSavant Daemon Error] %s (Code: %s)",
+            local daemon_err_msg = string.format("Daemon error: %s (Code: %s)",
               tostring(parsed.error.message or "Unknown Error"), tostring(parsed.error.code or "nil"))
             if parsed.error.data then
               daemon_err_msg = daemon_err_msg .. " - " .. vim.inspect(parsed.error.data)
             end
-            vim.notify(daemon_err_msg, vim.log.levels.ERROR)
-
-            -- Clean up the thinking line indicator to keep buffer responsive
-            local thinking_row = find_thinking_line(bufnr)
-            if thinking_row then
-              vim.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row + 1, false, {})
-            end
+            notify_err(daemon_err_msg)
+            UI:render_message(bufnr, "system_error", daemon_err_msg)
             return
           end
 
@@ -442,35 +450,26 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
 
             -- Now render all our collapsed blocks on their respective anchors!
             for _, block in ipairs(blocks_to_render) do
-              UI:on_collapsed_block(block.id, "thought", block.title, block.content, bufnr, block.row)
+              UI:render_message(bufnr, "thought", {
+                id = block.id,
+                title = block.title,
+                content = block.content,
+                row = block.row,
+              })
             end
           end
 
           -- Match incoming server notifications
           if parsed.method == "telemetry/collapsed_block" then
             local params = parsed.params or {}
+            UI:render_message(bufnr, params.type, {
+              id = params.id,
+              title = params.title,
+              content = params.full_content,
+            })
+
             local cached_block = UI.collapsed_blocks_cache[params.id]
-            local target_row
-
-            if not cached_block then
-              -- This is a brand NEW block! We must find a row for it and insert exactly one empty line.
-              local thinking_row = find_thinking_line(bufnr)
-              if thinking_row then
-                -- Shifting thinking indicator down by inserting an empty line at its row,
-                -- and anchoring the collapsed block extmark on the newly inserted row.
-                vim.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row, false, { "" })
-                target_row = thinking_row
-              else
-                local line_count = vim.api.nvim_buf_line_count(bufnr)
-                target_row = math.max(0, line_count - 1)
-                vim.api.nvim_buf_set_lines(bufnr, target_row, target_row, false, { "" })
-              end
-            else
-              -- This is an update to an existing block! Retain its previous row.
-              target_row = cached_block.row
-            end
-
-            UI:on_collapsed_block(params.id, params.type, params.title, params.full_content, bufnr, target_row)
+            local target_row = cached_block and cached_block.row or 0
 
             -- Bind buffer-local shortcuts if this is an interactive tool confirmation request
             if params.type == "confirmation" then
@@ -486,14 +485,14 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
                     confirmed = confirmed
                   })
                   if not ok then
-                    vim.notify("[CodeSavant Error] Failed to send tool confirmation response: " .. tostring(err), vim.log.levels.ERROR)
+                    notify_err("Failed to send tool confirmation response: " .. tostring(err))
                   end
                 else
-                  vim.notify("[CodeSavant Error] Failed to send tool confirmation: No active connection found for buffer " .. tostring(bufnr), vim.log.levels.ERROR)
+                  notify_err("Failed to send tool confirmation: No active connection found for buffer " .. tostring(bufnr))
                 end
                 -- Delete the mapping to make it single-use
-                pcall(vim.keymap.del, "n", keymaps.approve, { buffer = bufnr })
-                pcall(vim.keymap.del, "n", keymaps.decline, { buffer = bufnr })
+                pcall(vim.keymap.del, "n", keymaps.approve.key, { buffer = bufnr })
+                pcall(vim.keymap.del, "n", keymaps.decline.key, { buffer = bufnr })
 
                 -- Inline status update
                 local result_text = confirmed and " ✓ APPROVED" or " ✗ DECLINED"
@@ -506,47 +505,37 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
               end
 
               -- Set keymaps for approval and decline
-              vim.keymap.set("n", keymaps.approve, function()
+              vim.keymap.set("n", keymaps.approve.key, function()
                 local cursor = vim.api.nvim_win_get_cursor(0)
                 if cursor[1] - 1 == target_row then
                   respond(true)
                 else
                   -- Standard action fallback
-                  vim.api.nvim_feedkeys(keymaps.approve, "n", false)
+                  vim.api.nvim_feedkeys(keymaps.approve.key, "n", false)
                 end
-              end, { buffer = bufnr, silent = true, desc = "Approve tool execution" })
+              end, { buffer = bufnr, silent = true, desc = "CodeSavant " .. keymaps.approve.desc })
 
-              vim.keymap.set("n", keymaps.decline, function()
+              vim.keymap.set("n", keymaps.decline.key, function()
                 local cursor = vim.api.nvim_win_get_cursor(0)
                 if cursor[1] - 1 == target_row then
                   respond(false)
                 else
                   -- Standard action fallback
-                  vim.api.nvim_feedkeys(keymaps.decline, "n", false)
+                  vim.api.nvim_feedkeys(keymaps.decline.key, "n", false)
                 end
-              end, { buffer = bufnr, silent = true, desc = "Decline tool execution" })
+              end, { buffer = bufnr, silent = true, desc = "CodeSavant " .. keymaps.decline.desc })
             end
+
+          elseif parsed.method == "telemetry/error" then
+            local params = parsed.params or {}
+            notify_err(tostring(params.message))
+            UI:render_message(bufnr, "system_error", params.message)
 
           elseif parsed.method == "telemetry/message" then
             local params = parsed.params or {}
             local text = params.text or ""
             if text ~= "" then
-              -- LOUD error surfacing for stream crashes
-              if text:find("[CodeSavant Error]", 1, true) then
-                vim.notify(text, vim.log.levels.ERROR)
-              end
-              local lines = vim.split(text, "\n", { plain = true })
-              local thinking_row = find_thinking_line(bufnr)
-              if thinking_row then
-                -- Stop the thinking spinner immediately so it doesn't overwrite our streamed lines!
-                UI:stop_spinner(bufnr, "thinking")
-                -- Replace the thinking indicator line with final text chunk
-                vim.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row + 1, false, lines)
-              else
-                local line_count = vim.api.nvim_buf_line_count(bufnr)
-                local target_row = math.max(0, line_count - 1)
-                vim.api.nvim_buf_set_lines(bufnr, target_row, target_row, false, lines)
-              end
+              UI:render_message(bufnr, "agent_stream", text)
             end
 
           elseif parsed.method == "telemetry/status" then
@@ -554,12 +543,7 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
             vim.b[bufnr].status = params.status
 
             if params.status == "idle" then
-              UI:stop_spinner(bufnr, "thinking")
-              local thinking_row = find_thinking_line(bufnr)
-              if thinking_row then
-                -- Safely wipe any remaining thinking text placeholder on completion
-                vim.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row + 1, false, {})
-              end
+              UI:render_message(bufnr, "status_idle")
             end
           end
 
@@ -598,31 +582,13 @@ local function handle_enter(input_bufnr)
 
   local conn = Network.get_connection(history_bufnr)
   if not conn or not conn.pipe or conn.pipe:is_closing() then
-    vim.notify("[CodeSavant Error] Connection to daemon is not active. Please wait or verify daemon is running.", vim.log.levels.ERROR)
+    notify_err("Connection to daemon is not active. Please wait or verify daemon is running.")
     return
   end
 
   local status = vim.b[history_bufnr].status or "idle"
   if status == "thinking" then
-    UI:run_programmatic_update(history_bufnr, function()
-      local line_count = vim.api.nvim_buf_line_count(history_bufnr)
-      local to_append = {
-        "",
-        "User (Steering Directive):",
-        "  " .. prompt_text,
-        ""
-      }
-      local insert_start = (line_count == 1 and vim.api.nvim_buf_get_lines(history_bufnr, 0, 1, false)[1] == "") and 0 or line_count
-      vim.api.nvim_buf_set_lines(history_bufnr, insert_start, -1, false, to_append)
-
-      -- Scroll history window
-      local winids = vim.fn.win_findbuf(history_bufnr)
-      if winids and #winids > 0 then
-        local history_winid_found = winids[1]
-        local new_line_count = vim.api.nvim_buf_line_count(history_bufnr)
-        pcall(vim.api.nvim_win_set_cursor, history_winid_found, { new_line_count, 0 })
-      end
-    end)
+    UI:render_message(history_bufnr, "user_steering", lines)
 
     -- Clear input buffer
     vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {})
@@ -633,50 +599,12 @@ local function handle_enter(input_bufnr)
       text = prompt_text
     })
     if not ok then
-      vim.notify("[CodeSavant Error] Failed to inject steering directive: " .. tostring(err), vim.log.levels.ERROR)
+      notify_err("Failed to inject steering directive: " .. tostring(err))
     end
     return
   end
 
-  UI:run_programmatic_update(history_bufnr, function()
-    local line_count = vim.api.nvim_buf_line_count(history_bufnr)
-    local to_append = {}
-    if line_count > 1 or (line_count == 1 and vim.api.nvim_buf_get_lines(history_bufnr, 0, 1, false)[1] ~= "") then
-      table.insert(to_append, "") -- Separator
-    end
-    table.insert(to_append, "User:")
-    for _, line in ipairs(lines) do
-      table.insert(to_append, "  " .. line)
-    end
-    table.insert(to_append, "")
-    table.insert(to_append, "◀   CodeSavant is thinking...")
-    table.insert(to_append, "")
-
-    local insert_start = (line_count == 1 and vim.api.nvim_buf_get_lines(history_bufnr, 0, 1, false)[1] == "") and 0 or line_count
-    vim.api.nvim_buf_set_lines(history_bufnr, insert_start, -1, false, to_append)
-
-    -- Scroll history window
-    local winids = vim.fn.win_findbuf(history_bufnr)
-    if winids and #winids > 0 then
-      local history_winid_found = winids[1]
-      local new_line_count = vim.api.nvim_buf_line_count(history_bufnr)
-      pcall(vim.api.nvim_win_set_cursor, history_winid_found, { new_line_count, 0 })
-    end
-  end)
-
-  -- Kick off the animated spinner loader
-  local spinner_opt = M.config.spinner or {}
-  UI:start_spinner(history_bufnr, "thinking", {
-    type = spinner_opt.type,
-    custom_frames = spinner_opt.custom_frames,
-    interval = spinner_opt.interval,
-    use_extmark = true, -- Massively efficient virtual text overlay!
-    col = 4,            -- Position the spinner directly over the Space 2 gap
-    row = function() return find_thinking_line(history_bufnr) end,
-    format_fn = function(symbol)
-      return { { symbol, "Special" } } -- Color the rotating spinner beautifully!
-    end,
-  })
+  UI:render_message(history_bufnr, "user_prompt", lines)
 
   -- Clear input buffer
   vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {})
@@ -687,12 +615,12 @@ end
 
 local function handle_cancel(bufnr)
   local history_bufnr = vim.b[bufnr].partner_buf or bufnr
-  UI:stop_spinner(history_bufnr, "thinking")
+  UI:render_message(history_bufnr, "cancel")
   local conn = Network.get_connection(history_bufnr)
   if conn and conn.pipe and not conn.pipe:is_closing() then
     local ok, err = pcall(Network.send_request, conn, "session/cancel", { session_id = conn.session_id })
     if not ok then
-      vim.notify("[CodeSavant Error] Failed to cancel execution loop: " .. tostring(err), vim.log.levels.ERROR)
+      notify_err("Failed to cancel execution loop: " .. tostring(err))
     end
   end
 end
@@ -778,60 +706,65 @@ local function apply_buffer_config(history_bufnr, input_bufnr)
   local keymaps = M.config.keymaps or DEFAULT_CONFIG.keymaps
 
   -- Bind submit key inside Input Buffer
-  vim.keymap.set("n", keymaps.submit, function() handle_enter(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Submit Prompt" })
+  if keymaps.submit then
+    vim.keymap.set("n", keymaps.submit.key, function() handle_enter(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.submit.desc })
+  end
 
   -- Bind submit_alt key inside Input Buffer (both Normal and Insert modes)
   if keymaps.submit_alt then
-    vim.keymap.set("n", keymaps.submit_alt, function() handle_enter(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Submit Prompt" })
-    vim.keymap.set("i", keymaps.submit_alt, function() handle_enter(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Submit Prompt" })
+    vim.keymap.set("n", keymaps.submit_alt.key, function() handle_enter(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.submit_alt.desc })
+    vim.keymap.set("i", keymaps.submit_alt.key, function() handle_enter(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.submit_alt.desc })
   end
 
   -- Bind expand key inside History Buffer
-  vim.keymap.set("n", keymaps.expand, function() handle_expand(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Expand Block" })
+  if keymaps.expand then
+    vim.keymap.set("n", keymaps.expand.key, function() handle_expand(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.expand.desc })
+  end
 
   -- Bind open_buffer key inside History Buffer
   if keymaps.open_buffer then
-    vim.keymap.set("n", keymaps.open_buffer, function() handle_open_buffer(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Open Block in New Buffer" })
+    vim.keymap.set("n", keymaps.open_buffer.key, function() handle_open_buffer(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.open_buffer.desc })
   end
 
   -- Bind open_float key inside History Buffer
   if keymaps.open_float then
-    vim.keymap.set("n", keymaps.open_float, function() handle_open_float(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Open Block in Floating Window" })
+    vim.keymap.set("n", keymaps.open_float.key, function() handle_open_float(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.open_float.desc })
   end
 
   -- Bind local next/prev session cycling keymaps cleanly
   if keymaps.next_session then
-    vim.keymap.set("n", keymaps.next_session, function() M.cycle_session("next") end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Next Session Override" })
-    vim.keymap.set("n", keymaps.next_session, function() M.cycle_session("next") end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Next Session Override" })
+    vim.keymap.set("n", keymaps.next_session.key, function() M.cycle_session("next") end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.next_session.desc })
+    vim.keymap.set("n", keymaps.next_session.key, function() M.cycle_session("next") end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.next_session.desc })
   end
 
   if keymaps.prev_session then
-    vim.keymap.set("n", keymaps.prev_session, function() M.cycle_session("prev") end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Prev Session Override" })
-    vim.keymap.set("n", keymaps.prev_session, function() M.cycle_session("prev") end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Prev Session Override" })
+    vim.keymap.set("n", keymaps.prev_session.key, function() M.cycle_session("prev") end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.prev_session.desc })
+    vim.keymap.set("n", keymaps.prev_session.key, function() M.cycle_session("prev") end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.prev_session.desc })
   end
 
   -- Bind cancellation keymaps elegantly based on modal design
   if keymaps.cancel then
     -- Universal interrupts inside Input Buffer (Insert and Normal)
-    vim.keymap.set("i", keymaps.cancel, function() handle_cancel(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "Abort agent execution" })
-    vim.keymap.set("n", keymaps.cancel, function() handle_cancel(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "Abort agent execution" })
+    vim.keymap.set("i", keymaps.cancel.key, function() handle_cancel(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.cancel.desc })
+    vim.keymap.set("n", keymaps.cancel.key, function() handle_cancel(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.cancel.desc })
     -- Interrupt inside History Buffer (Normal)
-    vim.keymap.set("n", keymaps.cancel, function() handle_cancel(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "Abort agent execution" })
+    vim.keymap.set("n", keymaps.cancel.key, function() handle_cancel(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.cancel.desc })
   end
 
   -- Normal mode Esc inside Input Buffer also cancels/aborts execution
-  vim.keymap.set("n", "<Esc>", function() handle_cancel(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "Abort agent execution" })
+  local cancel_desc = keymaps.cancel and keymaps.cancel.desc or "Abort active agent run"
+  vim.keymap.set("n", "<Esc>", function() handle_cancel(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. cancel_desc })
 
   -- Bind manual render-markdown toggle keymaps if configured
   if keymaps.toggle_render then
-    vim.keymap.set("n", keymaps.toggle_render, function() M.toggle_render_markdown(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Toggle Render-Markdown" })
-    vim.keymap.set("n", keymaps.toggle_render, function() M.toggle_render_markdown(history_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Toggle Render-Markdown" })
+    vim.keymap.set("n", keymaps.toggle_render.key, function() M.toggle_render_markdown(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.toggle_render.desc })
+    vim.keymap.set("n", keymaps.toggle_render.key, function() M.toggle_render_markdown(history_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.toggle_render.desc })
   end
 
   -- Bind manual layout balancing keymaps if configured
   if keymaps.balance then
-    vim.keymap.set("n", keymaps.balance, function() M.restore_layout_balance() end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Balance Layout Splits" })
-    vim.keymap.set("n", keymaps.balance, function() M.restore_layout_balance() end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Balance Layout Splits" })
+    vim.keymap.set("n", keymaps.balance.key, function() M.restore_layout_balance() end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.balance.desc })
+    vim.keymap.set("n", keymaps.balance.key, function() M.restore_layout_balance() end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.balance.desc })
   end
 
   -- Bind C-level expand("<cfile>") optimized navigation keymaps on History Buffer
@@ -1144,7 +1077,7 @@ function M.load_session_picker()
   M.ensure_daemon_running(function(success, err_msg)
     if not success then
       vim.schedule(function()
-        vim.notify(err_msg or "[CodeSavant Error] Background daemon is not running.", vim.log.levels.ERROR)
+        notify_err(err_msg or "Background daemon is not running.")
       end)
       return
     end
@@ -1152,7 +1085,7 @@ function M.load_session_picker()
     local Network = require("code_savant.network")
     Network.list_sessions(socket_path, workspace_path, function(sessions, list_err)
       if list_err then
-        vim.notify("[CodeSavant Error] Failed to list sessions: " .. tostring(list_err), vim.log.levels.ERROR)
+        notify_err("Failed to list sessions: " .. tostring(list_err))
         return
       end
 
@@ -1300,7 +1233,7 @@ function M.setup(opts)
         mock_mode = false
       else
         vim.schedule(function()
-          vim.notify("[CodeSavant Error] Invalid argument: " .. cmd_opts.args .. ". Use 'mock' or 'live'.", vim.log.levels.ERROR)
+          notify_err("Invalid argument: " .. cmd_opts.args .. ". Use 'mock' or 'live'.")
         end)
         return
       end
@@ -1357,6 +1290,26 @@ function M.setup(opts)
       pcall(M.stop_daemon)
     end
   })
+
+  -- Idiomatically register CodeSavant keymap group with Which-Key if present
+  local function register_which_key_group()
+    local has_wk, wk = pcall(require, "which-key")
+    if not has_wk then return end
+
+    -- 1. Support modern Which-Key v3 API (wk.add)
+    if type(wk.add) == "function" then
+      pcall(wk.add, {
+        { "<leader>s", group = "CodeSavant" }
+      })
+    -- 2. Fall back to legacy Which-Key v2 API (wk.register)
+    elseif type(wk.register) == "function" then
+      pcall(wk.register, {
+        ["<leader>s"] = { name = "CodeSavant" }
+      })
+    end
+  end
+
+  register_which_key_group()
 
   M._initialized = true
 end
