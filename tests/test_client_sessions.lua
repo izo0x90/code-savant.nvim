@@ -35,24 +35,26 @@ if final_win_count <= initial_win_count then
 end
 print("Test 1 Passed!")
 
--- Test 1.5: Verify winfixbuf window locking protection
-print("Test 1.5: Verification of winfixbuf window locking protection...")
-if not vim.wo[session1.history_win].winfixbuf then
-  print("FAIL: winfixbuf is not enabled on session 1 history window")
-  os.exit(1)
-end
-if not vim.wo[session1.input_win].winfixbuf then
-  print("FAIL: winfixbuf is not enabled on session 1 input window")
+-- Test 1.5: Verify sidebar buffer redirection protection (Option 3)
+print("Test 1.5: Verification of sidebar buffer redirection protection...")
+local temp_buf = vim.api.nvim_create_buf(false, true)
+vim.bo[temp_buf].filetype = "python"
+
+-- Focus history window (stored in session1.input_win due to partner_win linkage) and switch its buffer
+vim.api.nvim_set_current_win(session1.input_win)
+vim.api.nvim_win_set_buf(session1.input_win, temp_buf)
+
+-- Trigger the BufEnter redirection autocommand
+vim.api.nvim_exec_autocmds("BufEnter", { buffer = temp_buf })
+
+-- Check if history window was restored to the history buffer
+local hist_buf = vim.api.nvim_win_get_buf(session1.input_win)
+if hist_buf ~= session1.bufnr then
+  print("FAIL: Sidebar history window was not restored to history buffer! Got: " .. tostring(hist_buf) .. ", Expected: " .. tostring(session1.bufnr))
   os.exit(1)
 end
 
--- Verify that setting a standard random buffer on the locked window fails
-local temp_buf = vim.api.nvim_create_buf(false, true)
-local ok, err = pcall(vim.api.nvim_win_set_buf, session1.history_win, temp_buf)
-if ok then
-  print("FAIL: Was able to set arbitrary buffer on a winfixbuf locked window!")
-  os.exit(1)
-end
+-- Clean up
 print("Test 1.5 Passed!")
 
 -- Test 2: Create multiple sessions and verify isolation
@@ -108,20 +110,39 @@ if current_buf ~= session2.bufnr and current_buf ~= session2.input_bufnr then
 end
 print("Test 3 Passed!")
 
--- Test 4: Verify contextual commands trapping config
+-- Test 4: Verify contextual commands trapping config and submit_alt bindings
 print("Test 4: Verification of command abbreviations / keymaps...")
 -- Abbreviations are evaluated inside command line, let's verify keymaps are locally bound
 local input_keymaps = vim.api.nvim_buf_get_keymap(session1.input_bufnr, "n")
 local found_cycle = false
+local found_submit_normal = false
 for _, map in ipairs(input_keymaps) do
   if map.desc and map.desc:match("CodeSavant Next Session Override") then
     found_cycle = true
+  elseif map.desc and map.desc:match("CodeSavant Submit Prompt") and map.lhs == "<S-CR>" then
+    found_submit_normal = true
+  end
+end
+
+local input_keymaps_i = vim.api.nvim_buf_get_keymap(session1.input_bufnr, "i")
+local found_submit_insert = false
+for _, map in ipairs(input_keymaps_i) do
+  if map.desc and map.desc:match("CodeSavant Submit Prompt") and map.lhs == "<S-CR>" then
+    found_submit_insert = true
     break
   end
 end
 
 if not found_cycle then
   print("FAIL: Session cycling keymaps not locally bound to buffers.")
+  os.exit(1)
+end
+if not found_submit_normal then
+  print("FAIL: Alternative submit keymap not locally bound in Normal mode.")
+  os.exit(1)
+end
+if not found_submit_insert then
+  print("FAIL: Alternative submit keymap not locally bound in Insert mode.")
   os.exit(1)
 end
 print("Test 4 Passed!")
@@ -173,14 +194,17 @@ if not sync_completed then
   os.exit(1)
 end
 
--- Test 5: Dynamic window cleanup during wiping out of individual sessions
+-- Test 5: Dynamic window cleanup during wiping out of last session
 print("Test 5: Verification of session wiping out and dynamic window destruction...")
 -- Mount session 1 to make it active and visible in the layout splits
 code_savant.mount_session(session1.bufnr)
 
+-- First, delete session 2's history buffer (which should cycle splits to session 1)
+vim.api.nvim_buf_delete(session2.bufnr, { force = true })
+
 local pre_wipe_wins = #vim.api.nvim_list_wins()
 
--- Delete history buffer of session 1
+-- Now, delete history buffer of session 1 (the final session) which should close the splits
 vim.api.nvim_buf_delete(session1.bufnr, { force = true })
 
 -- Give scheduling loop a brief tick to process BufWipeout callbacks
@@ -193,7 +217,7 @@ timer:start(200, 0, function()
   vim.schedule(function()
     local post_wipe_wins = #vim.api.nvim_list_wins()
     if post_wipe_wins >= pre_wipe_wins then
-      print("FAIL: Deleting history buffer did not tear down corresponding session windows dynamically. Pre: " .. tostring(pre_wipe_wins) .. ", Post: " .. tostring(post_wipe_wins))
+      print("FAIL: Deleting final history buffer did not tear down corresponding session windows dynamically. Pre: " .. tostring(pre_wipe_wins) .. ", Post: " .. tostring(post_wipe_wins))
       os.exit(1)
     end
     

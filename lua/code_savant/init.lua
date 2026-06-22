@@ -57,6 +57,7 @@ local DEFAULT_CONFIG = {
   keymaps = {
     expand = "<CR>",  -- Key to expand collapsed virtual thought blocks
     submit = "<CR>",  -- Key to submit prompt lines at the bottom of the buffer
+    submit_alt = "<S-CR>", -- Alternative submission (e.g., Shift+Enter) in any mode
     next_session = "<S-L>", -- Local normal-mode cycle forward
     prev_session = "<S-H>", -- Local normal-mode cycle backward
     open_buffer = "gO",     -- Key to open thought space in a new buffer split
@@ -779,6 +780,12 @@ local function apply_buffer_config(history_bufnr, input_bufnr)
   -- Bind submit key inside Input Buffer
   vim.keymap.set("n", keymaps.submit, function() handle_enter(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Submit Prompt" })
 
+  -- Bind submit_alt key inside Input Buffer (both Normal and Insert modes)
+  if keymaps.submit_alt then
+    vim.keymap.set("n", keymaps.submit_alt, function() handle_enter(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Submit Prompt" })
+    vim.keymap.set("i", keymaps.submit_alt, function() handle_enter(input_bufnr) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Submit Prompt" })
+  end
+
   -- Bind expand key inside History Buffer
   vim.keymap.set("n", keymaps.expand, function() handle_expand(history_bufnr) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Expand Block" })
 
@@ -858,6 +865,19 @@ local function apply_buffer_config(history_bufnr, input_bufnr)
   setup_abbrevs(input_bufnr)
 end
 
+--- Retrieves all active CodeSavant chat history buffers dynamically.
+--- @return integer[]
+local function get_active_sessions()
+  local sessions = {}
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype == CONSTANTS.FILETYPE then
+      table.insert(sessions, bufnr)
+    end
+  end
+  table.sort(sessions) -- Stable ordering by buffer ID
+  return sessions
+end
+
 --- Allocates a new history and input buffer pair, configures them, sets up local maps,
 --- and mounts them cleanly.
 --- @return table { bufnr: integer, input_bufnr: integer, history_win: integer, input_win: integer }
@@ -894,39 +914,71 @@ function M.create_chat_buffer()
     pcall(Network.disconnect, history_bufnr)
     pcall(UI.teardown, UI)
 
-    -- Defer buffer deletions and window closures to run asynchronously outside the synchronous wipeout phase
+    -- Defer everything asynchronously to run safely outside Neovim's buffer-freeing phase
     vim.schedule(function()
-      -- Wipe out input buffer if valid
-      if vim.api.nvim_buf_is_valid(input_bufnr) then
-        pcall(vim.api.nvim_buf_delete, input_bufnr, { force = true })
-      end
-      -- Wipe out history buffer if valid
-      if vim.api.nvim_buf_is_valid(history_bufnr) then
-        pcall(vim.api.nvim_buf_delete, history_bufnr, { force = true })
+      local sessions = get_active_sessions()
+
+      -- Filter out this history_bufnr from active sessions list
+      local other_sessions = {}
+      for _, s_buf in ipairs(sessions) do
+        if s_buf ~= history_bufnr then
+          table.insert(other_sessions, s_buf)
+        end
       end
 
-      -- Close any active windows that are currently showing either of these buffers
-      for _, win in ipairs(vim.api.nvim_list_wins()) do
-        if vim.api.nvim_win_is_valid(win) then
-          local b = vim.api.nvim_win_get_buf(win)
-          if b == history_bufnr or b == input_bufnr then
-            pcall(vim.api.nvim_win_close, win, true)
+      if #other_sessions > 0 then
+        -- Case A: Switch to next session asynchronously (reliably re-opens splits if closed)
+        local next_session_buf = other_sessions[1]
+        
+        -- Activate the session cycling lock so WinClosed events don't close partner splits
+        Layout._cycling_session = true
+        
+        local m_ok, m_err = pcall(M.mount_session, next_session_buf)
+        if not m_ok then
+          print("LOUD ERROR: mount_session failed: " .. tostring(m_err))
+        end
+        
+        -- Release the session cycling lock
+        Layout._cycling_session = false
+
+        -- Safely delete BOTH buffers of the closed session
+        if vim.api.nvim_buf_is_valid(input_bufnr) then
+          pcall(vim.api.nvim_buf_delete, input_bufnr, { force = true })
+        end
+        if vim.api.nvim_buf_is_valid(history_bufnr) then
+          pcall(vim.api.nvim_buf_delete, history_bufnr, { force = true })
+        end
+      else
+        -- Case B: Last session -> Standard teardown and window closure
+        if vim.api.nvim_buf_is_valid(input_bufnr) then
+          pcall(vim.api.nvim_buf_delete, input_bufnr, { force = true })
+        end
+        if vim.api.nvim_buf_is_valid(history_bufnr) then
+          pcall(vim.api.nvim_buf_delete, history_bufnr, { force = true })
+        end
+        for _, win in ipairs(vim.api.nvim_list_wins()) do
+          if vim.api.nvim_win_is_valid(win) then
+            local b = vim.api.nvim_win_get_buf(win)
+            if b == history_bufnr or b == input_bufnr then
+              pcall(vim.api.nvim_win_close, win, true)
+            end
           end
         end
       end
+      wiping_in_progress = false
     end)
 
     pcall(vim.api.nvim_del_augroup_by_id, group)
   end
 
-  vim.api.nvim_create_autocmd("BufWipeout", {
+  vim.api.nvim_create_autocmd("BufUnload", {
     buffer = history_bufnr,
     group = group,
     callback = cleanup_all,
     once = true,
   })
 
-  vim.api.nvim_create_autocmd("BufWipeout", {
+  vim.api.nvim_create_autocmd("BufUnload", {
     buffer = input_bufnr,
     group = group,
     callback = cleanup_all,
@@ -945,19 +997,6 @@ function M.create_chat_buffer()
     history_win = history_win,
     input_win = input_win,
   }
-end
-
---- Retrieves all active CodeSavant chat history buffers dynamically.
---- @return integer[]
-local function get_active_sessions()
-  local sessions = {}
-  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype == CONSTANTS.FILETYPE then
-      table.insert(sessions, bufnr)
-    end
-  end
-  table.sort(sessions) -- Stable ordering by buffer ID
-  return sessions
 end
 
 --- Mounts a history buffer and its linked partner input buffer into the layout.
@@ -1301,6 +1340,7 @@ function M.setup(opts)
   -- Initialize layout engine and register split interception
   Layout.init(M.config)
   Layout.setup_split_interception()
+  Layout.setup_sidebar_protection()
 
   -- Register graceful cleanup autocommand to prevent hanging on exit
   local group = vim.api.nvim_create_augroup("CodeSavantCleanup", { clear = true })

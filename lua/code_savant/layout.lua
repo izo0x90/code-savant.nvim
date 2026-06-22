@@ -3,9 +3,16 @@ local Layout = {}
 
 -- Flag to prevent infinite recursive interception loops
 Layout._spawning_layout = false
+Layout._cycling_session = false
 
 -- Config state injected from the setup block
 Layout.config = {}
+
+-- Active buffer tracking to support native BufEnter redirects
+Layout._active_history_buf = nil
+Layout._active_input_buf = nil
+Layout._history_win = nil
+Layout._input_win = nil
 
 -- Load core client dependencies safely
 local Network = require("code_savant.network")
@@ -17,14 +24,53 @@ function Layout.init(config)
   Layout.config = config or {}
 end
 
---- Sets buffer on a window while temporarily disabling winfixbuf.
+--- Retrieves standard active editing window (non-chat, non-input window)
+--- @return integer|nil win_id
+local function get_editing_window()
+  local current_tab = vim.api.nvim_get_current_tabpage()
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(current_tab)) do
+    if vim.api.nvim_win_is_valid(win) then
+      local buf = vim.api.nvim_win_get_buf(win)
+      local ft = vim.bo[buf].filetype
+      if ft ~= "code_savant_chat" and ft ~= "code_savant_input" then
+        return win
+      end
+    end
+  end
+  return nil
+end
+
+--- Resolves a guaranteed safe standard editing window to split from (Option 3)
+--- @return integer win_id
+local function get_safe_target_window()
+  -- Try to find a standard edit window first
+  local edit_win = get_editing_window()
+  if edit_win and vim.api.nvim_win_is_valid(edit_win) then
+    return edit_win
+  end
+  
+  -- Fallback to any valid window that is NOT a CodeSavant window
+  local current_tab = vim.api.nvim_get_current_tabpage()
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(current_tab)) do
+    if vim.api.nvim_win_is_valid(win) then
+      local buf = vim.api.nvim_win_get_buf(win)
+      local ft = vim.bo[buf].filetype
+      if ft ~= "code_savant_chat" and ft ~= "code_savant_input" then
+        return win
+      end
+    end
+  end
+  
+  -- Final fallback to current focused window
+  return vim.api.nvim_get_current_win()
+end
+
+--- Sets buffer on a window without winfixbuf locking.
 --- @param winid integer
 --- @param bufnr integer
 local function safe_set_buf(winid, bufnr)
   if vim.api.nvim_win_is_valid(winid) then
-    vim.wo[winid].winfixbuf = false
     vim.api.nvim_win_set_buf(winid, bufnr)
-    vim.wo[winid].winfixbuf = true
   end
 end
 
@@ -79,6 +125,10 @@ function Layout.mount_session(history_bufnr, target_winid, apply_config_cb)
     error("[CodeSavant Error] Partner input buffer not found for history buffer " .. tostring(history_bufnr))
   end
 
+  -- Update tracking of active session buffers
+  Layout._active_history_buf = history_bufnr
+  Layout._active_input_buf = input_bufnr
+
   if apply_config_cb then
     apply_config_cb(history_bufnr, input_bufnr)
   end
@@ -86,6 +136,8 @@ function Layout.mount_session(history_bufnr, target_winid, apply_config_cb)
   local hist_win, inp_win = Layout.find_visible_layout()
 
   if hist_win and inp_win then
+    Layout._history_win = hist_win
+    Layout._input_win = inp_win
     safe_set_buf(hist_win, history_bufnr)
     safe_set_buf(inp_win, input_bufnr)
 
@@ -110,9 +162,9 @@ function Layout.mount_session(history_bufnr, target_winid, apply_config_cb)
     end
   end
 
-  local target_win = target_winid or vim.api.nvim_get_current_win()
-  if not vim.api.nvim_win_is_valid(target_win) then
-    target_win = vim.api.nvim_get_current_win()
+  local target_win = target_winid or get_safe_target_window()
+  if not target_win or not vim.api.nvim_win_is_valid(target_win) then
+    target_win = get_safe_target_window()
   end
 
   Layout._spawning_layout = true
@@ -154,6 +206,9 @@ function Layout.mount_session(history_bufnr, target_winid, apply_config_cb)
 
   Layout._spawning_layout = false
 
+  Layout._history_win = new_hist_win
+  Layout._input_win = new_inp_win
+
   vim.b[history_bufnr].partner_win = new_inp_win
   vim.b[input_bufnr].partner_win = new_hist_win
 
@@ -166,6 +221,7 @@ function Layout.mount_session(history_bufnr, target_winid, apply_config_cb)
   local closed_in_progress = false
 
   local function handle_win_closed(is_hist)
+    if Layout._cycling_session then return end
     if closed_in_progress then return end
     closed_in_progress = true
     vim.schedule(function()
@@ -194,6 +250,10 @@ function Layout.mount_session(history_bufnr, target_winid, apply_config_cb)
           pcall(UI.teardown, UI)
           pcall(vim.api.nvim_buf_delete, input_bufnr, { force = true })
           pcall(vim.api.nvim_buf_delete, history_bufnr, { force = true })
+          -- Explicitly close any remaining CodeSavant windows
+          for _, w in ipairs(valid_wins) do
+            pcall(vim.api.nvim_win_close, w, true)
+          end
           closed_in_progress = false
           return
         end
@@ -289,6 +349,55 @@ function Layout.setup_split_interception()
           Layout.restore_layout_balance()
         end
       end)
+    end
+  })
+end
+
+--- Registers the BufEnter redirection hook to protect the sidebar from hijackings (Option 3)
+function Layout.setup_sidebar_protection()
+  local protect_group = vim.api.nvim_create_augroup("CodeSavantSidebarProtection", { clear = true })
+  
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = protect_group,
+    callback = function()
+      local cur_win = vim.api.nvim_get_current_win()
+      local hist_win = Layout._history_win
+      local inp_win = Layout._input_win
+
+      -- Fallback if tracked windows are not defined or invalid
+      if not hist_win or not vim.api.nvim_win_is_valid(hist_win) or not inp_win or not vim.api.nvim_win_is_valid(inp_win) then
+        hist_win, inp_win = Layout.find_visible_layout()
+      end
+      
+      if cur_win == hist_win or cur_win == inp_win then
+        local cur_buf = vim.api.nvim_get_current_buf()
+        local ft = vim.bo[cur_buf].filetype
+        
+        -- If a non-CodeSavant buffer is entering our sidebar window
+        if ft ~= "code_savant_chat" and ft ~= "code_savant_input" then
+          local correct_buf = nil
+          if cur_win == hist_win then
+            correct_buf = Layout._active_history_buf
+          else
+            correct_buf = Layout._active_input_buf
+          end
+          
+          -- 1. Restore the correct CodeSavant buffer in the sidebar window
+          if correct_buf and vim.api.nvim_buf_is_valid(correct_buf) then
+            vim.api.nvim_win_set_buf(cur_win, correct_buf)
+          end
+          
+          -- 2. Redirect the hijacked buffer to open in the main editor window
+          local edit_win = get_editing_window()
+          if edit_win then
+            vim.api.nvim_set_current_win(edit_win)
+          else
+            vim.cmd("vsplit")
+            edit_win = vim.api.nvim_get_current_win()
+          end
+          vim.api.nvim_win_set_buf(edit_win, cur_buf)
+        end
+      end
     end
   })
 end
