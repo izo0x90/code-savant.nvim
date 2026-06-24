@@ -440,7 +440,6 @@ class SessionManager:
         filepath = self._get_filepath(session_id)
         session_str = str(session_id)
         meta_filepath = self.storage_dir / f"{session_str}{self.meta_suffix}"
-        scratch_dir = self.storage_dir / session_str / self.scratch_dir_name
 
         def _remove():
             if filepath.exists():
@@ -448,19 +447,12 @@ class SessionManager:
             if meta_filepath.exists():
                 meta_filepath.unlink()
             
-            # Clean up nested scratch directory
-            if scratch_dir.exists() and scratch_dir.is_dir():
-                for item in scratch_dir.iterdir():
-                    if item.is_file():
-                        item.unlink()
-                scratch_dir.rmdir()
-                
-            # If the session folder itself exists, delete it if empty
+            # Recursively wipe the entire parent subdirectory (and nested sub-agents/scratch logs)
             session_dir = self.storage_dir / session_str
             if session_dir.exists() and session_dir.is_dir():
+                import shutil
                 try:
-                    if not list(session_dir.iterdir()):
-                        session_dir.rmdir()
+                    shutil.rmtree(session_dir)
                 except Exception:
                     pass
 
