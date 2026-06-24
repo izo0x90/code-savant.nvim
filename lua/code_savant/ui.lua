@@ -31,6 +31,7 @@ UI.MESSAGE_REGISTRY = {
   user_prompt = {
     collapsible = false,
     header = "User:",
+    header_hl = "Identifier",
     indent = "  ",
     trailer = { "", "◀   CodeSavant is thinking...", "" },
     spinner_to_start = "thinking",
@@ -38,17 +39,27 @@ UI.MESSAGE_REGISTRY = {
   user_steering = {
     collapsible = false,
     header = "User (Steering Directive):",
+    header_hl = "Identifier",
     indent = "  ",
     trailer = {},
   },
   agent_stream = {
     collapsible = false,
+    header = "CodeSavant:",
+    header_hl = "Special",
     spinner_to_stop = "thinking",
     is_streaming = true,
+  },
+  model_response = {
+    collapsible = false,
+    header = "CodeSavant:",
+    header_hl = "Special",
+    indent = "",
   },
   system_error = {
     collapsible = false,
     header = "Error:",
+    header_hl = "DiagnosticError",
     indent = "  ",
     hl_group = "DiagnosticError",
     spinner_to_stop = "thinking",
@@ -124,6 +135,8 @@ function UI.new(api)
   local self = setmetatable({}, UI)
   self.api = api or vim.api
   self.collapsed_blocks_cache = {}
+  self.extmark_metadata = {}
+  self.block_to_extmark = {}
   self.pending_approvals = {
     queue = {},
   }
@@ -253,6 +266,7 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
 
         -- Clean up old expanded extmark
         if previous_extmark_id then
+          self.extmark_metadata[previous_extmark_id] = nil
           pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, previous_extmark_id)
         end
 
@@ -269,6 +283,15 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
         self.collapsed_blocks_cache[id].extmark_id = extmark_id
         self.collapsed_blocks_cache[id].height = height
         self.collapsed_blocks_cache[id].row = target_row
+
+        -- Track metadata natively
+        self.extmark_metadata[extmark_id] = {
+          id = id,
+          type = block_type,
+          status = "expanded",
+          height = height,
+        }
+        self.block_to_extmark[id] = extmark_id
       end)
 
       return previous_extmark_id
@@ -277,6 +300,7 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
 
   -- 5. If collapsed, clear the old extmark before setting up the new one
   if previous_extmark_id then
+    self.extmark_metadata[previous_extmark_id] = nil
     pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, previous_extmark_id)
   end
 
@@ -313,6 +337,14 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
     -- 9. Cache extmark association and row index
     self.collapsed_blocks_cache[id].extmark_id = extmark_id
     self.collapsed_blocks_cache[id].row = target_row
+
+    -- Track metadata natively
+    self.extmark_metadata[extmark_id] = {
+      id = id,
+      type = block_type,
+      status = "collapsed",
+    }
+    self.block_to_extmark[id] = extmark_id
   end)
 
   if block_type == "confirmation" then
@@ -372,6 +404,7 @@ function UI:_expand_inplace_impl(opts)
     self.api.nvim_buf_set_lines(bufnr, row, row + 1, false, display_lines)
     
     -- 6. Clean up old collapsed extmark
+    self.extmark_metadata[cached.extmark_id] = nil
     pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, cached.extmark_id)
 
     -- 7. Anchor new expanded tracking extmark at the top of the block with indicator above it as a virtual line
@@ -405,6 +438,15 @@ function UI:_expand_inplace_impl(opts)
     self.collapsed_blocks_cache[id].extmark_id = extmark_id
     self.collapsed_blocks_cache[id].status = "expanded"
     self.collapsed_blocks_cache[id].height = height
+
+    -- Track metadata natively
+    self.extmark_metadata[extmark_id] = {
+      id = id,
+      type = cached.type,
+      status = "expanded",
+      height = height,
+    }
+    self.block_to_extmark[id] = extmark_id
   end)
 end
 
@@ -445,6 +487,7 @@ function UI:_collapse_inplace_impl(opts)
     self.api.nvim_buf_set_lines(bufnr, row, row + height, false, { "" })
 
     -- 5. Clean up old expanded extmark
+    self.extmark_metadata[cached.extmark_id] = nil
     pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, cached.extmark_id)
 
     -- 6. Anchor new collapsed tracking extmark with overlay indicator
@@ -458,6 +501,14 @@ function UI:_collapse_inplace_impl(opts)
     self.collapsed_blocks_cache[id].extmark_id = extmark_id
     self.collapsed_blocks_cache[id].status = "collapsed"
     self.collapsed_blocks_cache[id].height = nil
+
+    -- Track metadata natively
+    self.extmark_metadata[extmark_id] = {
+      id = id,
+      type = cached.type,
+      status = "collapsed",
+    }
+    self.block_to_extmark[id] = extmark_id
   end)
 end
 
@@ -900,15 +951,15 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
 
   -- 3. If pure state transition, we exit early
   if config.no_write then
+    if msg_type == "status_idle" or msg_type == "cancel" then
+      self.active_stream_extmark_id = nil
+    end
     return
   end
 
   -- 4. Compile text block content
   local lines = type(data) == "string" and vim.split(data, "\n", { plain = true }) or data
   local text_to_write = {}
-  if config.header then
-    table.insert(text_to_write, config.header)
-  end
   local indent = config.indent or ""
   for _, line in ipairs(lines) do
     table.insert(text_to_write, indent .. line)
@@ -925,23 +976,67 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
 
     if config.is_streaming then
       local thinking_row = get_thinking_row(self, bufnr)
-      if thinking_row then
-        self.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row + 1, false, text_to_write)
-      else
-        local target_row = math.max(0, line_count - 1)
-        self.api.nvim_buf_set_lines(bufnr, target_row, target_row, false, text_to_write)
+      local target_row = thinking_row or math.max(0, line_count - 1)
+      self.api.nvim_buf_set_lines(bufnr, target_row, target_row + (thinking_row and 1 or 0), false, text_to_write)
+
+      -- Anchor the stream virtual header exactly once on the first streaming chunk
+      if config.header and not self.active_stream_extmark_id then
+        if not config.header_hl then
+          error(string.format("[CodeSavantUI] Missing required 'header_hl' for streaming message type '%s'", msg_type))
+        end
+        local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, target_row, 0, {
+          virt_lines = { { { config.header, config.header_hl } } },
+          virt_lines_above = true,
+        })
+        self.active_stream_extmark_id = extmark_id
+
+        -- Register metadata natively
+        self.extmark_metadata[extmark_id] = {
+          id = "active_stream",
+          type = "message",
+          role = "model",
+          status = "inline",
+        }
       end
     else
+      local is_empty_buffer = (line_count == 1 and self.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] == "")
+      local needs_separator = not is_empty_buffer
+
       local final_lines = {}
-      if line_count > 1 or (line_count == 1 and self.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] ~= "") then
+      if needs_separator then
         table.insert(final_lines, "")
       end
       for _, l in ipairs(text_to_write) do
         table.insert(final_lines, l)
       end
 
-      local insert_start = (line_count == 1 and self.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] == "") and 0 or line_count
+      local insert_start = is_empty_buffer and 0 or line_count
+      local header_row = needs_separator and insert_start + 1 or insert_start
+
       self.api.nvim_buf_set_lines(bufnr, insert_start, -1, false, final_lines)
+
+      if config.header then
+        if not config.header_hl then
+          error(string.format("[CodeSavantUI] Missing required 'header_hl' for message type '%s'", msg_type))
+        end
+        local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, header_row, 0, {
+          virt_lines = { { { config.header, config.header_hl } } },
+          virt_lines_above = true,
+        })
+
+        -- Track metadata natively
+        local msg_role = "system"
+        if msg_type == "user_prompt" or msg_type == "user_steering" then
+          msg_role = "user"
+        end
+
+        self.extmark_metadata[extmark_id] = {
+          id = "msg_" .. tostring(extmark_id),
+          type = "message",
+          role = msg_role,
+          status = "inline",
+        }
+      end
 
       -- 6. Anchor thinking tracking extmark on placeholder row
       if config.trailer then
@@ -1144,6 +1239,205 @@ function UI:cycle_spinner_style(bufnr)
   -- Single-string assignment! Zero array operations needed
   instance.type = next_style
   instance.frame_idx = 1
+end
+
+--- Resolve the start and end row (0-indexed) for a text object of the given type and mode.
+--- @param bufnr number The buffer number.
+--- @param obj_type string "message", "thought", or "tool".
+--- @param inner boolean Whether to return the inner range (true) or around range (false).
+--- @return number|nil, number? The start and end row, or nil if not found.
+function UI:resolve_text_object_range(bufnr, obj_type, inner)
+  local cursor_row = self.api.nvim_win_get_cursor(0)[1] - 1
+  local extmarks = self.api.nvim_buf_get_extmarks(bufnr, self.namespace, 0, -1, {})
+  local line_count = self.api.nvim_buf_line_count(bufnr)
+
+  if #extmarks == 0 then return nil, nil end
+
+  -- 1. Gather and sort all extmarks of interest
+  local list = {}
+  for _, mark in ipairs(extmarks) do
+    local extmark_id = mark[1]
+    local r = mark[2]
+    local meta = self.extmark_metadata[extmark_id]
+    if meta then
+      local matched = false
+      if obj_type == "message" then
+        matched = (meta.type == "message")
+      elseif obj_type == "thought" then
+        matched = (meta.type == "thought")
+      elseif obj_type == "tool" then
+        matched = (meta.type == "tool" or meta.type == "confirmation")
+      end
+
+      if matched then
+        table.insert(list, {
+          id = extmark_id,
+          row = r,
+          meta = meta,
+        })
+      end
+    end
+  end
+
+  if #list == 0 then return nil, nil end
+
+  -- Sort by row index ascending
+  table.sort(list, function(a, b) return a.row < b.row end)
+
+  -- 2. Find the active block enclosing the cursor
+  local active_idx = nil
+  for i, item in ipairs(list) do
+    local item_start = item.row
+    local item_end = item_start
+    if item.meta.status == "expanded" and item.meta.height then
+      item_end = item_start + item.meta.height - 1
+    end
+
+    if cursor_row >= item_start then
+      if obj_type == "message" then
+        -- Messages are contiguous; the active message extends until the next message start
+        local next_item = list[i + 1]
+        local limit = next_item and next_item.row - 1 or (line_count - 1)
+        if cursor_row <= limit then
+          active_idx = i
+        end
+      else
+        -- Nested blocks (thoughts/tools) are discrete and bounded
+        if cursor_row <= item_end then
+          active_idx = i
+        end
+      end
+    end
+  end
+
+  if not active_idx then return nil, nil end
+
+  local active = list[active_idx]
+  local start_row = active.row
+  local end_row = start_row
+
+  if obj_type == "message" then
+    local next_item = list[active_idx + 1]
+    end_row = next_item and next_item.row - 1 or (line_count - 1)
+
+    if inner then
+      -- Trim any leading or trailing blank lines in the inner message
+      local lines = self.api.nvim_buf_get_lines(bufnr, start_row, end_row + 1, false)
+      local s_offset = 0
+      local e_offset = 0
+      for i = 1, #lines do
+        if lines[i] == "" then
+          s_offset = s_offset + 1
+        else
+          break
+        end
+      end
+      for i = #lines, 1, -1 do
+        if lines[i] == "" then
+          e_offset = e_offset + 1
+        else
+          break
+        end
+      end
+      
+      start_row = math.min(end_row, start_row + s_offset)
+      end_row = math.max(start_row, end_row - e_offset)
+    end
+  else
+    if active.meta.status == "expanded" and active.meta.height then
+      end_row = start_row + active.meta.height - 1
+      if inner then
+        -- Exclude the Border Top and Border Bottom physical lines
+        start_row = math.min(end_row, start_row + 1)
+        end_row = math.max(start_row, end_row - 1)
+      end
+    end
+  end
+
+  return start_row, end_row
+end
+
+--- Select the resolved line range in visual line mode.
+--- @param obj_type string "message", "thought", or "tool".
+--- @param inner boolean Whether to return the inner range (true) or around range (false).
+function UI:select_text_object(obj_type, inner)
+  local bufnr = self.api.nvim_get_current_buf()
+  local s, e = self:resolve_text_object_range(bufnr, obj_type, inner)
+  if s and e then
+    -- Move cursor to start_row, col 0
+    self.api.nvim_win_set_cursor(0, { s + 1, 0 })
+    -- Start visual line mode "V"
+    vim.cmd("normal! V")
+    -- Move cursor to end_row, col 0 to extend selection
+    self.api.nvim_win_set_cursor(0, { e + 1, 0 })
+  end
+end
+
+--- Jump vertically to the previous or next extmark of the given type.
+--- @param obj_type string "message", "thought", or "tool".
+--- @param forward boolean True to jump forward (next), false to jump backward (previous).
+function UI:jump_to_extmark(obj_type, forward)
+  local bufnr = self.api.nvim_get_current_buf()
+  local cursor_row = self.api.nvim_win_get_cursor(0)[1] - 1
+  local extmarks = self.api.nvim_buf_get_extmarks(bufnr, self.namespace, 0, -1, {})
+
+  if #extmarks == 0 then return end
+
+  local list = {}
+  for _, mark in ipairs(extmarks) do
+    local extmark_id = mark[1]
+    local r = mark[2]
+    local meta = self.extmark_metadata[extmark_id]
+    if meta then
+      local matched = false
+      if obj_type == "message" then
+        matched = (meta.type == "message")
+      elseif obj_type == "thought" then
+        matched = (meta.type == "thought")
+      elseif obj_type == "tool" then
+        matched = (meta.type == "tool" or meta.type == "confirmation")
+      end
+
+      if matched then
+        table.insert(list, r)
+      end
+    end
+  end
+
+  if #list == 0 then return end
+
+  -- Sort unique row coordinates ascending
+  table.sort(list)
+
+  local target_row = nil
+  if forward then
+    for _, r in ipairs(list) do
+      if r > cursor_row then
+        target_row = r
+        break
+      end
+    end
+  else
+    for i = #list, 1, -1 do
+      local r = list[i]
+      if r < cursor_row then
+        target_row = r
+        break
+      end
+    end
+  end
+
+  if target_row then
+    self.api.nvim_win_set_cursor(0, { target_row + 1, 0 })
+  end
+end
+
+function UI.select_text_object_static(obj_type, inner)
+  return UI.get_instance():select_text_object(obj_type, inner)
+end
+
+function UI.jump_to_extmark_static(obj_type, forward)
+  return UI.get_instance():jump_to_extmark(obj_type, forward)
 end
 
 --- Module level static function forwarders to support both singleton and class usage patterns

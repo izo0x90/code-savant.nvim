@@ -73,6 +73,22 @@ local DEFAULT_CONFIG = {
     decline = { key = "d", desc = "Decline tool confirmation" },
     toggle_render = { key = "<leader>sr", desc = "Toggle render-markdown" },
     balance = { key = "<leader>sb", desc = "Balance layout splits" },
+
+    -- Text Objects (Operator-Pending & Visual)
+    inner_message = { key = "im", desc = "Inner message" },
+    around_message = { key = "am", desc = "Around message" },
+    inner_thought = { key = "it", desc = "Inner thought block" },
+    around_thought = { key = "at", desc = "Around thought block" },
+    inner_tool = { key = "io", desc = "Inner tool block" },
+    around_tool = { key = "ao", desc = "Around tool block" },
+
+    -- Motions (Normal Mode jumps)
+    next_message = { key = "]m", desc = "Jump to next message" },
+    prev_message = { key = "[m", desc = "Jump to previous message" },
+    next_thought = { key = "]t", desc = "Jump to next thought" },
+    prev_thought = { key = "[t", desc = "Jump to previous thought" },
+    next_tool = { key = "]o", desc = "Jump to next tool" },
+    prev_tool = { key = "[o", desc = "Jump to previous tool" },
   }
 }
 
@@ -396,66 +412,54 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
           -- Handle historical chat history loading
           if parsed.result and parsed.result.chat_history then
             local chat_history = parsed.result.chat_history
-            local formatted_lines = {}
-            local blocks_to_render = {}
 
+            -- 1. Clear any pre-existing contents first
+            vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {})
+
+            -- 2. Render turns sequentially using the unified pipeline
             for msg_idx, msg in ipairs(chat_history) do
               local role = msg.role
               if msg.parts and #msg.parts > 0 then
-                if #formatted_lines > 0 then
-                  table.insert(formatted_lines, "") -- separator
-                end
-
                 if role == "user" then
-                  table.insert(formatted_lines, "User:")
+                  -- Aggregate user text parts
+                  local user_text = ""
                   for _, part in ipairs(msg.parts) do
                     if part.text then
-                      local msg_lines = vim.split(part.text, "\n", { plain = true })
-                      for _, line in ipairs(msg_lines) do
-                        table.insert(formatted_lines, "  " .. line)
+                      if user_text ~= "" then
+                        user_text = user_text .. "\n"
                       end
+                      user_text = user_text .. part.text
                     end
+                  end
+                  if user_text ~= "" then
+                    UI:render_message(bufnr, "user_prompt", user_text)
                   end
                 elseif role == "model" then
                   for part_idx, part in ipairs(msg.parts) do
-                    if part.type == "thought" then
-                      -- Insert an empty placeholder line to anchor the collapsible extmark
-                      table.insert(formatted_lines, "")
-                      local row_idx = #formatted_lines -- 1-based index of the placeholder line
-
-                      local block_id = string.format("loaded_thought_%s_%d_%d", tostring(parsed.result.session_id), msg_idx, part_idx)
-                      local title = part.title or "Thinking..."
+                    local block_type = part.type
+                    if block_type == "text" then
+                      if part.text and part.text ~= "" then
+                        UI:render_message(bufnr, "model_response", part.text)
+                      end
+                    else
+                      -- Collapsible block type (thought, tool, warning, error, etc.)
+                      local resolved_type = block_type or "thought"
+                      local block_id = string.format("loaded_%s_%s_%d_%d", resolved_type, tostring(parsed.result.session_id), msg_idx, part_idx)
+                      local title = part.title
+                      if not title then
+                        error(string.format("[CodeSavant] Missing required field 'title' for collapsible block type '%s'", resolved_type))
+                      end
                       local content = part.text or ""
 
-                      table.insert(blocks_to_render, {
+                      UI:render_message(bufnr, resolved_type, {
                         id = block_id,
                         title = title,
                         content = content,
-                        row = row_idx - 1 -- convert to 0-based row index for Neovim API
                       })
-                    elseif part.type == "text" and part.text then
-                      local content_lines = vim.split(part.text, "\n", { plain = true })
-                      for _, line in ipairs(content_lines) do
-                        table.insert(formatted_lines, line)
-                      end
                     end
                   end
                 end
               end
-            end
-
-            if #formatted_lines > 0 then
-              vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, formatted_lines)
-            end
-
-            -- Now render all our collapsed blocks on their respective anchors!
-            for _, block in ipairs(blocks_to_render) do
-              UI:render_message(bufnr, "thought", {
-                id = block.id,
-                title = block.title,
-                content = block.content,
-                row = block.row,
-              })
             end
           end
 
@@ -747,6 +751,46 @@ local function apply_buffer_config(history_bufnr, input_bufnr)
   vim.keymap.set("n", "gV", function()
     require("code_savant.navigation").jump_to_file_at_cursor("vsplit")
   end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Go to File (VSplit)" })
+
+  -- Bind Text Objects (Operator-Pending and Visual) inside History Buffer
+  if keymaps.inner_message then
+    vim.keymap.set({ "o", "x" }, keymaps.inner_message.key, function() UI.select_text_object_static("message", true) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.inner_message.desc })
+  end
+  if keymaps.around_message then
+    vim.keymap.set({ "o", "x" }, keymaps.around_message.key, function() UI.select_text_object_static("message", false) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.around_message.desc })
+  end
+  if keymaps.inner_thought then
+    vim.keymap.set({ "o", "x" }, keymaps.inner_thought.key, function() UI.select_text_object_static("thought", true) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.inner_thought.desc })
+  end
+  if keymaps.around_thought then
+    vim.keymap.set({ "o", "x" }, keymaps.around_thought.key, function() UI.select_text_object_static("thought", false) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.around_thought.desc })
+  end
+  if keymaps.inner_tool then
+    vim.keymap.set({ "o", "x" }, keymaps.inner_tool.key, function() UI.select_text_object_static("tool", true) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.inner_tool.desc })
+  end
+  if keymaps.around_tool then
+    vim.keymap.set({ "o", "x" }, keymaps.around_tool.key, function() UI.select_text_object_static("tool", false) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.around_tool.desc })
+  end
+
+  -- Bind Jumps (Motions) in Normal Mode inside History Buffer
+  if keymaps.next_message then
+    vim.keymap.set("n", keymaps.next_message.key, function() UI.jump_to_extmark_static("message", true) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.next_message.desc })
+  end
+  if keymaps.prev_message then
+    vim.keymap.set("n", keymaps.prev_message.key, function() UI.jump_to_extmark_static("message", false) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.prev_message.desc })
+  end
+  if keymaps.next_thought then
+    vim.keymap.set("n", keymaps.next_thought.key, function() UI.jump_to_extmark_static("thought", true) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.next_thought.desc })
+  end
+  if keymaps.prev_thought then
+    vim.keymap.set("n", keymaps.prev_thought.key, function() UI.jump_to_extmark_static("thought", false) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.prev_thought.desc })
+  end
+  if keymaps.next_tool then
+    vim.keymap.set("n", keymaps.next_tool.key, function() UI.jump_to_extmark_static("tool", true) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.next_tool.desc })
+  end
+  if keymaps.prev_tool then
+    vim.keymap.set("n", keymaps.prev_tool.key, function() UI.jump_to_extmark_static("tool", false) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.prev_tool.desc })
+  end
 
   -- Add local cnoreabbrevs to trap buffer commands
   local function setup_abbrevs(buf)
