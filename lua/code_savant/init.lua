@@ -468,64 +468,6 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
               content = params.full_content,
             })
 
-            local cached_block = UI.collapsed_blocks_cache[params.id]
-            local target_row = cached_block and cached_block.row or 0
-
-            -- Bind buffer-local shortcuts if this is an interactive tool confirmation request
-            if params.type == "confirmation" then
-              local Network = require("code_savant.network")
-              local keymaps = M.config.keymaps or DEFAULT_CONFIG.keymaps
-              local function respond(confirmed)
-                -- Send the decision back to the daemon
-                local conn = Network.get_connection(bufnr)
-                if conn then
-                  local ok, err = pcall(Network.send_request, conn, "session/respond_confirmation", {
-                    session_id = params.session_id,
-                    id = params.id,
-                    confirmed = confirmed
-                  })
-                  if not ok then
-                    notify_err("Failed to send tool confirmation response: " .. tostring(err))
-                  end
-                else
-                  notify_err("Failed to send tool confirmation: No active connection found for buffer " .. tostring(bufnr))
-                end
-                -- Delete the mapping to make it single-use
-                pcall(vim.keymap.del, "n", keymaps.approve.key, { buffer = bufnr })
-                pcall(vim.keymap.del, "n", keymaps.decline.key, { buffer = bufnr })
-
-                -- Inline status update
-                local result_text = confirmed and " ✓ APPROVED" or " ✗ DECLINED"
-                local hl = confirmed and "DiagnosticOk" or "DiagnosticError"
-                pcall(vim.api.nvim_buf_set_extmark, bufnr, UI.namespace, target_row, 0, {
-                  id = UI.collapsed_blocks_cache[params.id].extmark_id,
-                  virt_text = { { "▶ Approve/Decline: " .. params.title .. result_text, hl } },
-                  virt_text_pos = "overlay",
-                })
-              end
-
-              -- Set keymaps for approval and decline
-              vim.keymap.set("n", keymaps.approve.key, function()
-                local cursor = vim.api.nvim_win_get_cursor(0)
-                if cursor[1] - 1 == target_row then
-                  respond(true)
-                else
-                  -- Standard action fallback
-                  vim.api.nvim_feedkeys(keymaps.approve.key, "n", false)
-                end
-              end, { buffer = bufnr, silent = true, desc = "CodeSavant " .. keymaps.approve.desc })
-
-              vim.keymap.set("n", keymaps.decline.key, function()
-                local cursor = vim.api.nvim_win_get_cursor(0)
-                if cursor[1] - 1 == target_row then
-                  respond(false)
-                else
-                  -- Standard action fallback
-                  vim.api.nvim_feedkeys(keymaps.decline.key, "n", false)
-                end
-              end, { buffer = bufnr, silent = true, desc = "CodeSavant " .. keymaps.decline.desc })
-            end
-
           elseif parsed.method == "telemetry/error" then
             local params = parsed.params or {}
             notify_err(tostring(params.message))
@@ -765,6 +707,28 @@ local function apply_buffer_config(history_bufnr, input_bufnr)
   if keymaps.balance then
     vim.keymap.set("n", keymaps.balance.key, function() M.restore_layout_balance() end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.balance.desc })
     vim.keymap.set("n", keymaps.balance.key, function() M.restore_layout_balance() end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.balance.desc })
+  end
+
+  -- Bind FIFO approvals inside both Input and History buffers
+  if keymaps.approve and keymaps.decline then
+    vim.keymap.set("n", "<leader>sa", function() UI.resolve_fifo_confirmation(true) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Approve FIFO request" })
+    vim.keymap.set("n", "<leader>sa", function() UI.resolve_fifo_confirmation(true) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Approve FIFO request" })
+    
+    vim.keymap.set("n", "<leader>sd", function() UI.resolve_fifo_confirmation(false) end, { buffer = input_bufnr, silent = true, desc = "CodeSavant Decline FIFO request" })
+    vim.keymap.set("n", "<leader>sd", function() UI.resolve_fifo_confirmation(false) end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Decline FIFO request" })
+
+    -- Bind targeted approvals inside History buffer
+    vim.keymap.set("n", keymaps.approve.key, function()
+      if not UI.resolve_cursor_confirmation(true) then
+        vim.api.nvim_feedkeys(keymaps.approve.key, "n", false)
+      end
+    end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Approve Targeted Request" })
+
+    vim.keymap.set("n", keymaps.decline.key, function()
+      if not UI.resolve_cursor_confirmation(false) then
+        vim.api.nvim_feedkeys(keymaps.decline.key, "n", false)
+      end
+    end, { buffer = history_bufnr, silent = true, desc = "CodeSavant Decline Targeted Request" })
   end
 
   -- Bind C-level expand("<cfile>") optimized navigation keymaps on History Buffer
@@ -1268,6 +1232,10 @@ function M.setup(opts)
 
   vim.api.nvim_create_user_command("CodeSavantBalance", function()
     M.restore_layout_balance()
+  end, { force = true })
+
+  vim.api.nvim_create_user_command("CodeSavantApprovals", function()
+    require("code_savant.navigation").browse_approvals()
   end, { force = true })
 
   -- Initialize layout engine and register split interception

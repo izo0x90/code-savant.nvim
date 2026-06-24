@@ -10,16 +10,22 @@ Features
 
 - CONVO RELATED
   - convo. tag code block, code simbols, files with comments, pull into prompt from tags
-  - conco. quick way to influence answer stype (short, concise, nonn ornate etc. customizible in some way)
+  - conco. input templates quick way to influence answer stype (short, concise, nonn ornate etc. customizible in some way)
+    - quick change/cycle between associated templates
+    - picker change to any template
   - convo. tag messages
   - convo. pull into new session based on tags, same session and different sessions
   - convo. extract technical summary out of tagged msgs
 
 - On the fly strategy change, as way to drive modes, no simple "ifs" like plan mode
-  - arch registry native flows as mode
-  - Freeflow planning mode
-  - Classic gemini cli mode
-
+  - Templates associated with modes
+  - Modes
+    - arch registry native flows as mode
+    - Freeflow planning mode
+      - Arch planning
+      - Code planning
+    - Classic gemini cli mode
+    - Issue solver "smart grep mode"
 
 ----------------------------------------------------------------------------------------------------
 General workflow/ Mitigation techniques

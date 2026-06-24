@@ -12,8 +12,8 @@ end
 code_savant.setup({
   spawn_split = "vsplit",
   keymaps = {
-    next_session = "<Tab>",
-    prev_session = "<S-Tab>",
+    next_session = { key = "<Tab>", desc = "Cycle to next session" },
+    prev_session = { key = "<S-Tab>", desc = "Cycle to previous session" },
   }
 })
 

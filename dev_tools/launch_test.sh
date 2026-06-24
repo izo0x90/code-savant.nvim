@@ -36,10 +36,6 @@ done
 exec nvim -c "set rtp+=${PROJECT_ROOT}" \
           -c "lua require('code_savant').setup({
                 socket_path = '/tmp/code_savant.sock',
-                perf_debug = ${PERF_DEBUG},
-                keymaps = {
-                  expand = '<CR>',
-                  submit = '<CR>'
-                }
+                perf_debug = ${PERF_DEBUG}
               })" \
           -c "CodeSavantChat ${MOCK_ARG}"

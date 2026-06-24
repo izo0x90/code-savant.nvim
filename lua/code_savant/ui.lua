@@ -18,7 +18,10 @@ UI.CONSTANTS = {
     circle    = { "◐", "◓", "◑", "◒" },
     equalizer = { " ", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃" },
     shade     = { "░", "▒", "▓", "█", "▓", "▒" },
-    ellipsis  = { "   ", ".  ", ".. ", "..." },
+    pulse     = { "·", "•", "●", "•" },
+    scan      = { "⎺", "⎻", "⎼", "⎽", "⎼", "⎻" },
+    compass   = { "▲", "►", "▼", "◄" },
+    star      = { "✶", "✸", "✹", "✺", "✹", "✸" },
     retro     = { "|", "/", "-", "\\" },
   },
 }
@@ -29,7 +32,7 @@ UI.MESSAGE_REGISTRY = {
     collapsible = false,
     header = "User:",
     indent = "  ",
-    trailer = { "", "◀ CodeSavant is thinking...", "" },
+    trailer = { "", "◀   CodeSavant is thinking...", "" },
     spinner_to_start = "thinking",
   },
   user_steering = {
@@ -121,6 +124,10 @@ function UI.new(api)
   local self = setmetatable({}, UI)
   self.api = api or vim.api
   self.collapsed_blocks_cache = {}
+  self.pending_approvals = {
+    queue = {},
+  }
+  self.spinner_cycle_index = 1
 
   -- Create namespace using injected API or vim.api
   self.namespace = self.api.nvim_create_namespace(UI.CONSTANTS.NAMESPACE_NAME)
@@ -307,6 +314,13 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
     self.collapsed_blocks_cache[id].extmark_id = extmark_id
     self.collapsed_blocks_cache[id].row = target_row
   end)
+
+  if block_type == "confirmation" then
+    self:push_pending_approval(id)
+  end
+
+  -- Cycle the running spinner style for the next progress step!
+  self:cycle_spinner_style(bufnr)
 
   return extmark_id
 end
@@ -616,12 +630,8 @@ function UI:start_spinner(bufnr, key, opts)
 
   -- Parse options
   local preset = opts.type or "braille"
-  local frames = (preset == "custom" and opts.custom_frames) 
-                 or UI.CONSTANTS.SPINNER_STYLES[preset] 
-                 or UI.CONSTANTS.SPINNER_STYLES.braille
-
-  if not frames or #frames == 0 then
-    error("[CodeSavantUI] Invalid spinner style: " .. tostring(preset))
+  if preset == "custom" and opts.custom_frames then
+    UI.CONSTANTS.SPINNER_STYLES["custom"] = opts.custom_frames
   end
 
   -- Create a tracker extmark to follow the line dynamically in O(1) time
@@ -632,17 +642,24 @@ function UI:start_spinner(bufnr, key, opts)
   local col = opts.col or 0
   local tracker_extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, initial_row, col, {})
 
-  -- Register instance
-  self.animation_wheel.registry[registry_key] = {
+  -- Register instance with a dynamic metatable proxy!
+  self.animation_wheel.registry[registry_key] = setmetatable({
     bufnr = bufnr,
     key = key,
-    frames = frames,
+    type = preset,
     frame_idx = 1,
     use_extmark = not not opts.use_extmark,
     col = col,
     extmark_id = tracker_extmark_id,
     format_fn = opts.format_fn,
-  }
+  }, {
+    __index = function(tbl, k)
+      if k == "frames" then
+        return UI.CONSTANTS.SPINNER_STYLES[tbl.type] or UI.CONSTANTS.SPINNER_STYLES.braille
+      end
+      return nil
+    end
+  })
 
   -- Ensure timer tick rate matches interval if configured
   if opts.interval then
@@ -701,8 +718,9 @@ function UI:ensure_wheel_running()
           end
 
           if is_valid_line then
-            local symbol = inst.frames[inst.frame_idx]
-            inst.frame_idx = (inst.frame_idx % #inst.frames) + 1
+            local frames = UI.CONSTANTS.SPINNER_STYLES[inst.type] or UI.CONSTANTS.SPINNER_STYLES.braille
+            local symbol = frames[inst.frame_idx] or " "
+            inst.frame_idx = (inst.frame_idx % #frames) + 1
 
             -- 2. Render efficiently
             self:run_programmatic_update(inst.bufnr, function()
@@ -943,8 +961,16 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
   -- 7. Automatically start spinner if configured
   if config.spinner_to_start then
     local spinner_opt = require("code_savant").config.spinner or {}
+    local styles = {}
+    for name, _ in pairs(UI.CONSTANTS.SPINNER_STYLES) do
+      table.insert(styles, name)
+    end
+    table.sort(styles)
+    local selected_type = styles[self.spinner_cycle_index] or "equalizer"
+    self.spinner_cycle_index = (self.spinner_cycle_index % #styles) + 1
+
     self:start_spinner(bufnr, config.spinner_to_start, {
-      type = spinner_opt.type,
+      type = selected_type,
       custom_frames = spinner_opt.custom_frames,
       interval = spinner_opt.interval,
       use_extmark = true,
@@ -958,6 +984,166 @@ end
 --- Collapsible Block Delegation Handler
 function UI:_render_collapsible_handler(bufnr, block_type, payload)
   return self:_on_collapsed_block_impl(payload.id, block_type, payload.title, payload.content, bufnr, payload.row)
+end
+
+function UI:push_pending_approval(id)
+  for _, queued_id in ipairs(self.pending_approvals.queue) do
+    if queued_id == id then return end
+  end
+  table.insert(self.pending_approvals.queue, id)
+  
+  local cached = self.collapsed_blocks_cache[id]
+  if cached and cached.bufnr then
+    self:update_input_overlay(cached.bufnr)
+  end
+end
+
+function UI:remove_pending_approval(id)
+  local found_idx = nil
+  for idx, queued_id in ipairs(self.pending_approvals.queue) do
+    if queued_id == id then
+      found_idx = exit_code or idx
+    end
+  end
+  if found_cycle or found_submit_normal or found_submit_insert or found_cycle then
+    -- No-op, just fallback variable protection
+  end
+  if found_cycle == nil then found_cycle = false end
+  if found_submit_normal == nil then found_submit_normal = false end
+  if found_submit_insert == nil then found_submit_insert = false end
+  if found_idx then
+    table.remove(self.pending_approvals.queue, found_idx)
+  end
+
+  local cached = self.collapsed_blocks_cache[id]
+  if cached then
+    cached.resolved = true
+    if cached.bufnr then
+      self:update_input_overlay(cached.bufnr)
+    end
+  end
+end
+
+function UI:execute_resolution(id, confirmed)
+  local cached = self.collapsed_blocks_cache[id]
+  if not cached then return end
+  local bufnr = cached.bufnr
+
+  self:remove_pending_approval(id)
+
+  local Network = require("code_savant.network")
+  local conn = Network.get_connection(bufnr)
+  if conn then
+    pcall(Network.send_request, conn, "session/respond_confirmation", {
+      session_id = conn.session_id,
+      id = id,
+      confirmed = confirmed
+    })
+  end
+
+  local result_text = confirmed and " ✓ APPROVED" or " ✗ DECLINED"
+  local hl = confirmed and "DiagnosticOk" or "DiagnosticError"
+  local display_text = "▶ Approve/Decline: " .. cached.title .. result_text
+  pcall(self.api.nvim_buf_set_extmark, bufnr, self.namespace, cached.row, 0, {
+    id = cached.extmark_id,
+    virt_text = { { display_text, hl } },
+    virt_text_pos = "overlay",
+  })
+end
+
+function UI:_resolve_fifo_confirmation_impl(confirmed)
+  local oldest_id = self.pending_approvals.queue[1]
+  if oldest_id then
+    self:execute_resolution(oldest_id, confirmed)
+    return true
+  else
+    vim.notify("[CodeSavant] No pending approvals in queue.", vim.log.levels.INFO)
+    return false
+  end
+end
+
+function UI:_resolve_cursor_confirmation_impl(confirmed)
+  local bufnr = self.api.nvim_get_current_buf()
+  local cursor_row = self.api.nvim_win_get_cursor(0)[1] - 1
+
+  for id, block in pairs(self.collapsed_blocks_cache) do
+    if block.bufnr == bufnr and block.type == "confirmation" and not block.resolved then
+      local ok, pos = pcall(self.api.nvim_buf_get_extmark_by_id, bufnr, self.namespace, block.extmark_id, {})
+      if ok and pos and #pos > 0 and pos[1] == cursor_row then
+        self:execute_resolution(id, confirmed)
+        return true
+      end
+    end
+  end
+  return false
+end
+
+function UI:update_input_overlay(history_bufnr)
+  if not history_bufnr or not self.api.nvim_buf_is_valid(history_bufnr) then return end
+  local input_bufnr = vim.b[history_bufnr].partner_buf
+  if not input_bufnr or not self.api.nvim_buf_is_valid(input_bufnr) then return end
+
+  if self.input_overlay_extmark_id then
+    pcall(self.api.nvim_buf_del_extmark, input_bufnr, self.namespace, self.input_overlay_extmark_id)
+    self.input_overlay_extmark_id = nil
+  end
+
+  local active_approvals = {}
+  for _, id in ipairs(self.pending_approvals.queue) do
+    local cached = self.collapsed_blocks_cache[id]
+    if cached and cached.bufnr == history_bufnr and not cached.resolved then
+      table.insert(active_approvals, { id = id, cached = cached })
+    end
+  end
+
+  if #active_approvals == 0 then
+    return
+  end
+
+  local oldest = active_approvals[1]
+  local queue_text = string.format("⚠️  [Pending Approval 1/%d]: %s", #active_approvals, oldest.cached.title)
+  local help_text = "👉 Press <leader>sa to Approve | <leader>sd to Decline | :CodeSavantApprovals to browse queue"
+
+  self.input_overlay_extmark_id = self.api.nvim_buf_set_extmark(input_bufnr, self.namespace, 0, 0, {
+    virt_lines = {
+      { { queue_text, "DiagnosticWarn" } },
+      { { help_text, "Comment" } },
+      { { "", "Normal" } },
+    },
+    virt_lines_above = true,
+  })
+end
+
+-- Module level forwarders for singleton/class patterns
+function UI.resolve_fifo_confirmation(self, confirmed)
+  if type(self) ~= "table" or self.collapsed_blocks_cache == nil then
+    local actual_confirmed = self
+    return UI.get_instance():_resolve_fifo_confirmation_impl(actual_confirmed)
+  else
+    return self:_resolve_fifo_confirmation_impl(confirmed)
+  end
+end
+
+function UI.resolve_cursor_confirmation(self, confirmed)
+  if type(self) ~= "table" or self.collapsed_blocks_cache == nil then
+    local actual_confirmed = self
+    return UI.get_instance():_resolve_cursor_confirmation_impl(actual_confirmed)
+  else
+    return self:_resolve_cursor_confirmation_impl(confirmed)
+  end
+end
+
+function UI:cycle_spinner_style(bufnr)
+  local instance = self.animation_wheel.registry[bufnr .. ":thinking"]
+  if not instance then return end
+
+  local styles = { "equalizer", "braille", "clock", "circle", "shade", "pulse", "scan", "compass", "star", "retro" }
+  local next_style = styles[self.spinner_cycle_index] or "equalizer"
+  self.spinner_cycle_index = (self.spinner_cycle_index % #styles) + 1
+
+  -- Single-string assignment! Zero array operations needed
+  instance.type = next_style
+  instance.frame_idx = 1
 end
 
 --- Module level static function forwarders to support both singleton and class usage patterns

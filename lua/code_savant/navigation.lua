@@ -122,4 +122,111 @@ function Navigation.jump_to_file_at_cursor(open_mode)
   end
 end
 
+--- Dynamic, Telescope-driven FIFO/Out-of-Order Approval Queue Browser
+function Navigation.browse_approvals()
+  local cs = require("code_savant")
+  if not cs._has_telescope or not cs._telescope_api then
+    vim.notify("[CodeSavant] Telescope.nvim is required to browse the approvals queue.", vim.log.levels.WARN)
+    return
+  end
+
+  local UI = require("code_savant.ui").get_instance()
+  local list = {}
+  for idx, id in ipairs(UI.pending_approvals.queue) do
+    local cached = UI.collapsed_blocks_cache[id]
+    if cached and not cached.resolved then
+      table.insert(list, {
+        idx = idx,
+        id = id,
+        title = cached.title,
+        content = cached.full_content,
+        bufnr = cached.bufnr,
+        row = cached.row,
+        extmark_id = cached.extmark_id,
+      })
+    end
+  end
+
+  if #list == 0 then
+    vim.notify("[CodeSavant] No pending approvals in queue.", vim.log.levels.INFO)
+    return
+  end
+
+  local pickers = require("telescope.pickers")
+  local finders = require("telescope.finders")
+  local conf = require("telescope.config").values
+  local actions = require("telescope.actions")
+  local action_state = require("telescope.actions.state")
+  local previewers = require("telescope.previewers")
+
+  pickers.new({}, {
+    prompt_title = "CodeSavant Pending Approvals Queue",
+    finder = finders.new_table({
+      results = list,
+      entry_maker = function(entry)
+        return {
+          value = entry,
+          display = string.format("[%d] ⚠️  %s", entry.idx, entry.title),
+          ordinal = entry.title,
+        }
+      end,
+    }),
+    sorter = conf.generic_sorter({}),
+    previewer = previewers.new_buffer_previewer({
+      title = "Request Context & Arguments",
+      define_preview = function(self, entry, status)
+        local val = entry.value
+        vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, vim.split(val.content, "\n", { plain = true }))
+        vim.api.nvim_buf_set_option(self.state.bufnr, "filetype", "json")
+      end,
+    }),
+    attach_mappings = function(prompt_bufnr, map)
+      -- <CR>: Jumps to correct history buffer and line
+      actions.select_default:replace(function()
+        actions.close(prompt_bufnr)
+        local entry = action_state.get_selected_entry()
+        if not entry then return end
+        local val = entry.value
+
+        local winids = vim.fn.win_findbuf(val.bufnr)
+        if winids and #winids > 0 then
+          vim.api.nvim_set_current_win(winids[1])
+          pcall(vim.api.nvim_win_set_cursor, winids[1], { val.row + 1, 0 })
+          vim.cmd("normal! zz")
+        end
+      end)
+
+      -- <C-y>: Approve out-of-order directly from Telescope
+      map({ "i", "n" }, "<C-y>", function()
+        local entry = action_state.get_selected_entry()
+        if not entry then return end
+        local val = entry.value
+
+        UI:execute_resolution(val.id, true)
+        actions.close(prompt_bufnr)
+
+        vim.schedule(function()
+          Navigation.browse_approvals()
+        end)
+      end)
+
+      -- <C-n>: Decline out-of-order directly from Telescope
+      map({ "i", "n" }, "<C-n>", function()
+        local entry = action_state.get_selected_entry()
+        if not entry then return end
+        local val = entry.value
+
+        UI:execute_resolution(val.id, false)
+        actions.close(prompt_bufnr)
+
+        vim.schedule(function()
+          Navigation.browse_approvals()
+        end)
+      end)
+
+      return true
+    end,
+  }):find()
+end
+
 return Navigation
