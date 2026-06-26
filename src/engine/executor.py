@@ -179,20 +179,23 @@ class LocalAgentExecutor:
         self.definition = definition
         self.context_strategy = context_strategy
         self.registry = tool_registry or ToolRegistry()
-        self.pending_hints_queue: List[str] = []
+        self.pending_hints_queue: List[Any] = []
         self.skill_manager = skill_manager
         self.agent_registry = agent_registry
         self.memory_manager = memory_manager
+        self.last_model_message_id = None
 
     async def inject_steering(self, message: str, context: ExecutionContext) -> None:
         """Appends interactive guidance steering directives into queue."""
-        self.pending_hints_queue.append(message)
+        steering_msg_id = uuid.uuid7()
+        self.pending_hints_queue.append((steering_msg_id, message))
         await context.message_bus.publish(
             EventEnvelope(
                 event_type=EventType.TELEMETRY_ACTIVITY,
                 payload=TelemetryActivityPayload(
                     activity_type=TelemetryActivityType.STEERING_QUEUED,
-                    msg=f"Queued user steering payload: '{message}'",
+                    msg=message,
+                    block_id=steering_msg_id,
                 ),
                 sender=context.message_bus.name,
             )
@@ -244,6 +247,7 @@ class LocalAgentExecutor:
         prompt_id = f"agent-{self.definition.name}#{turn_counter}"
 
         model_message_id = uuid.uuid7()
+        self.last_model_message_id = model_message_id
 
         await context.message_bus.publish(
             EventEnvelope(
@@ -252,6 +256,7 @@ class LocalAgentExecutor:
                     activity_type=TelemetryActivityType.TURN_START,
                     msg=f"Starting dispatch turn cycle #{turn_counter}",
                     prompt_id=prompt_id,
+                    block_id=model_message_id,
                 ),
                 sender=context.message_bus.name,
             )
@@ -282,6 +287,7 @@ class LocalAgentExecutor:
                 )
                 parts.append(chunk)
             elif isinstance(chunk, ContentChunk):
+                self.has_streamed_content = True
                 await context.message_bus.publish(
                     EventEnvelope(
                         event_type=EventType.TELEMETRY_CONTENT,
@@ -327,6 +333,7 @@ class LocalAgentExecutor:
                         activity_type=TelemetryActivityType.STOP,
                         msg="Model generated completion response with zero tool dispatches. Stopping loop.",
                         prompt_id=prompt_id,
+                        block_id=model_message_id,
                     ),
                     sender=context.message_bus.name,
                 )
@@ -466,6 +473,7 @@ class LocalAgentExecutor:
         self, context: ExecutionContext, inputs: Dict[str, Any]
     ) -> Optional[str]:
         """Recreates runInternal async execution loop in a completely stateless manner."""
+        self.has_streamed_content = False
         for t_name in self.registry.get_all_tool_names():
             t = self.registry.get_tool(t_name)
             if t:
@@ -482,7 +490,7 @@ class LocalAgentExecutor:
 
         query_text = template_string(self.definition.query, inputs)
 
-        # Append initial query or continue instruction directly to stateful session
+        # Append initial query or new turn prompt directly to stateful session
         if not context.session.chat_history:
             await context.session.append_message(
                 ChatMessage(
@@ -490,16 +498,34 @@ class LocalAgentExecutor:
                 )
             )
         else:
-            last_msg = context.session.chat_history[-1]
-            if last_msg.role != MessageRole.USER.value:
-                await context.session.append_message(
-                    ChatMessage(
-                        role=MessageRole.USER.value,
-                        parts=[TextPart(text="Continue task execution.")],
-                    )
+            await context.session.append_message(
+                ChatMessage(
+                    role=MessageRole.USER.value,
+                    parts=[TextPart(text=query_text or "Continue task execution.")],
                 )
+            )
 
         current_message = context.session.chat_history[-1]
+        self.last_model_message_id = current_message.id
+
+        # Publish the initial committed user prompt to telemetry
+        query_text_val = ""
+        if current_message.parts and len(current_message.parts) > 0:
+            part = current_message.parts[0]
+            if hasattr(part, "text"):
+                query_text_val = part.text
+
+        await context.message_bus.publish(
+            EventEnvelope(
+                event_type=EventType.TELEMETRY_USER,
+                payload=TelemetryContentPayload(
+                    text=query_text_val,
+                    block_id=current_message.id,
+                    prompt_id=f"agent-{self.definition.name}#0",
+                ),
+                sender=context.message_bus.name,
+            )
+        )
 
         # Compile start request context once for logging system prompt metadata
         request_context = await self.context_strategy.compile_context(
@@ -571,7 +597,13 @@ class LocalAgentExecutor:
                 current_message = turn_result.next_message
 
                 if self.pending_hints_queue:
-                    hints = "\n".join(self.pending_hints_queue)
+                    hints_list = []
+                    last_steer_id = None
+                    for steer_id, msg in self.pending_hints_queue:
+                        hints_list.append(msg)
+                        last_steer_id = steer_id
+
+                    hints = "\n".join(hints_list)
                     self.pending_hints_queue.clear()
 
                     await context.message_bus.publish(
@@ -581,6 +613,7 @@ class LocalAgentExecutor:
                                 activity_type=TelemetryActivityType.STEERING_INJECTED,
                                 msg=f"Injecting manual user directive: '{hints}'",
                                 prompt_id=f"agent-{self.definition.name}#{turn_counter - 1}",
+                                block_id=last_steer_id,
                             ),
                             sender=context.message_bus.name,
                         )
@@ -589,10 +622,24 @@ class LocalAgentExecutor:
                         hints
                     )
                     steer_msg = ChatMessage(
+                        id=last_steer_id,
                         role=MessageRole.USER.value,
                         parts=[TextPart(text=steering_prompt)],
                     )
                     await context.session.append_message(steer_msg)
+
+                    # Publish committed user prompt telemetry
+                    await context.message_bus.publish(
+                        EventEnvelope(
+                            event_type=EventType.TELEMETRY_USER,
+                            payload=TelemetryContentPayload(
+                                text=hints,
+                                block_id=steer_msg.id,
+                                prompt_id=f"agent-{self.definition.name}#{turn_counter - 1}",
+                            ),
+                            sender=context.message_bus.name,
+                        )
+                    )
                     current_message = steer_msg
 
         finally:
@@ -617,8 +664,9 @@ class LocalAgentExecutor:
                 payload=TelemetryActivityPayload(
                     activity_type=TelemetryActivityType.END,
                     msg=f"Asynchronous loop execution finished: {terminate_reason}",
-                    response=final_result,
+                    response=final_result if not getattr(self, "has_streamed_content", False) else None,
                     prompt_id=f"agent-{self.definition.name}#{turn_counter - 1}",
+                    block_id=self.last_model_message_id,
                 ),
                 sender=context.message_bus.name,
             )

@@ -127,15 +127,6 @@ async def test_json_rpc_codec():
     assert decoded_err["id"] == "abc"
     assert err.endswith(b"\n")
 
-    # Test notification
-    notif = JsonRpcCodec.encode_notification("telemetry/status", {"status": "thinking"})
-    decoded_notif = json.loads(notif.decode("utf-8").strip())
-    assert decoded_notif["jsonrpc"] == "2.0"
-    assert decoded_notif["method"] == "telemetry/status"
-    assert decoded_notif["params"] == {"status": "thinking"}
-    assert "id" not in decoded_notif
-    assert notif.endswith(b"\n")
-
 
 @pytest.mark.asyncio
 async def test_uds_server_lifecycle(server_env, client_conn):
@@ -188,22 +179,22 @@ async def test_uds_server_lifecycle(server_env, client_conn):
 
     # Accumulate streamed telemetry notifications
     notifications = []
-    # Expecting telemetry/status (thinking), telemetry/collapsed_block (thought)
-    while len(notifications) < 10:
+    # Expecting flat messages with type "thinking" and "thought"
+    while len(notifications) < 15:
         line = await reader.readline()
         if not line:
             break
         msg = json.loads(line.decode("utf-8").strip())
-        if "id" not in msg:
+        if "id" not in msg or isinstance(msg.get("id"), str):
             notifications.append(msg)
-            methods = [n["method"] for n in notifications]
-            if "telemetry/status" in methods and "telemetry/collapsed_block" in methods:
+            types = [n.get("type") for n in notifications]
+            if "thinking" in types and "thought" in types:
                 break
 
     assert len(notifications) >= 1
-    methods = [n["method"] for n in notifications]
-    assert "telemetry/status" in methods
-    assert "telemetry/collapsed_block" in methods
+    types = [n.get("type") for n in notifications]
+    assert "thinking" in types
+    assert "thought" in types
 
     # 3. Send session/close
     close_req = {

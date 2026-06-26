@@ -77,44 +77,6 @@ def test_encode_error_invalid_types():
     assert "msg_id must be int, str, or None" in str(exc_info.value)
 
 
-def test_encode_notification_success():
-    """Verify notification encoding with valid types."""
-    notif_bytes = JsonRpcCodec.encode_notification(
-        method="telemetry/log",
-        params={"level": "info", "message": "Started processing"}
-    )
-    assert notif_bytes.endswith(JsonRpcCodec.DELIMITER.encode("utf-8"))
-    
-    payload = json.loads(notif_bytes.decode("utf-8").strip())
-    assert payload["jsonrpc"] == JsonRpcCodec.JSONRPC_VERSION
-    assert payload["method"] == "telemetry/log"
-    assert payload["params"] == {"level": "info", "message": "Started processing"}
-    assert "id" not in payload
-
-
-def test_encode_notification_invalid_types_and_values():
-    """Verify that encode_notification raises TypeError or ValueError on invalid parameters."""
-    # Method is not a string
-    with pytest.raises(TypeError) as exc_info:
-        JsonRpcCodec.encode_notification(method=42, params={"ok": True})  # type: ignore
-    assert "method must be a string" in str(exc_info.value)
-
-    # Method is empty string
-    with pytest.raises(ValueError) as exc_info:
-        JsonRpcCodec.encode_notification(method="", params={"ok": True})
-    assert "method cannot be empty or whitespace-only" in str(exc_info.value)
-
-    # Method is whitespace-only
-    with pytest.raises(ValueError) as exc_info:
-        JsonRpcCodec.encode_notification(method="   ", params={"ok": True})
-    assert "method cannot be empty or whitespace-only" in str(exc_info.value)
-
-    # Params is not a dictionary
-    with pytest.raises(TypeError) as exc_info:
-        JsonRpcCodec.encode_notification(method="event", params="not-a-dict")  # type: ignore
-    assert "params must be a dictionary" in str(exc_info.value)
-
-
 def test_codec_constants():
     """Verify that the class-level constants are configured correctly."""
     assert JsonRpcCodec.JSONRPC_VERSION == "2.0"

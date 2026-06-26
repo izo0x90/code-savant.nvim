@@ -5,13 +5,26 @@
 local UI = {}
 UI.__index = UI
 
+local function log_debug(fmt, ...)
+  local file = io.open("/tmp/code_savant_client.log", "a")
+  if file then
+    file:write(string.format("[%s] " .. fmt .. "\n", os.date("%H:%M:%S"), ...))
+    file:close()
+  end
+end
+
 --- Centralized Configuration Constants
 UI.CONSTANTS = {
   NAMESPACE_NAME = "code_savant_ui",
-  GLYPH_COLLAPSED = "▶ Thought: ",
-  HIGHLIGHT_GROUP_COLLAPSED = "Comment",
   BORDER_TOP = "╭────────────────────────Thought Space────────────────────────╮",
   BORDER_BOTTOM = "╰─────────────────────────────────────────────────────────────╯",
+  
+  -- Centralized Virtual Spinner Configuration
+  SPINNER_PREFIX = "◀   ",
+  SPINNER_SUFFIX = "   CodeSavant is thinking...",
+  SPINNER_HIGHLIGHT = "Special",
+  SPINNER_COLUMN_OFFSET = 0,
+
   SPINNER_STYLES = {
     braille   = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
     clock     = { "◴", "◷", "◶", "◵" },
@@ -28,33 +41,19 @@ UI.CONSTANTS = {
 
 UI.MESSAGE_REGISTRY = {
   -- Standard Continuous Flow Types
-  user_prompt = {
+  user = {
     collapsible = false,
     header = "User:",
     header_hl = "Identifier",
     indent = "  ",
-    trailer = { "", "◀   CodeSavant is thinking...", "" },
-    spinner_to_start = "thinking",
+    role = "user",
   },
-  user_steering = {
-    collapsible = false,
-    header = "User (Steering Directive):",
-    header_hl = "Identifier",
-    indent = "  ",
-    trailer = {},
-  },
-  agent_stream = {
-    collapsible = false,
-    header = "CodeSavant:",
-    header_hl = "Special",
-    spinner_to_stop = "thinking",
-    is_streaming = true,
-  },
-  model_response = {
+  model = {
     collapsible = false,
     header = "CodeSavant:",
     header_hl = "Special",
     indent = "",
+    role = "model",
   },
   system_error = {
     collapsible = false,
@@ -62,63 +61,76 @@ UI.MESSAGE_REGISTRY = {
     header_hl = "DiagnosticError",
     indent = "  ",
     hl_group = "DiagnosticError",
-    spinner_to_stop = "thinking",
-    clear_thinking_line = true,
+    role = "system",
   },
 
   -- Pure State Transition Types (Pure state changes, write no lines to the buffer)
-  status_idle = {
+  thinking = {
+    collapsible = false,
+    spinner_to_start = "thinking",
+    no_write = true,
+    status_value = "thinking",
+  },
+  idle = {
     collapsible = false,
     spinner_to_stop = "thinking",
     clear_thinking_line = true,
     no_write = true,
+    status_value = "idle",
   },
   cancel = {
     collapsible = false,
     spinner_to_stop = "thinking",
     clear_thinking_line = true,
     no_write = true,
+    status_value = "cancel",
   },
 
   -- Collapsible Block Types (Routed to collapsible handler)
   thought = {
     collapsible = true,
-    block_type = "thought",
     prefix_collapsed = "▶ Thought: ",
     prefix_expanded = "▼ Thought: ",
     hl_group = "Comment",
   },
-  tool = {
+  function_call = {
     collapsible = true,
-    block_type = "tool",
-    prefix_collapsed = "▶ Tool: ",
-    prefix_expanded = "▼ Tool: ",
+    prefix_collapsed = "▶ Tool Call: ",
+    prefix_expanded = "▼ Tool Call: ",
+    hl_group = "Special",
+  },
+  function_response = {
+    collapsible = true,
+    prefix_collapsed = "▶ Tool Response: ",
+    prefix_expanded = "▼ Tool Response: ",
     hl_group = "Special",
   },
   confirmation = {
     collapsible = true,
-    block_type = "confirmation",
     prefix_collapsed = "▶ Approve/Decline: ",
     prefix_expanded = "▼ Approve/Decline: ",
     hl_group = "DiagnosticWarn",
   },
   warning = {
     collapsible = true,
-    block_type = "warning",
     prefix_collapsed = "▶ Warning: ",
     prefix_expanded = "▼ Warning: ",
     hl_group = "DiagnosticWarn",
   },
   steering = {
     collapsible = true,
-    block_type = "steering",
     prefix_collapsed = "▶ Steering: ",
     prefix_expanded = "▼ Steering: ",
     hl_group = "Identifier",
   },
+  steering_queued = {
+    collapsible = true,
+    prefix_collapsed = "▶ Steering Queued: ",
+    prefix_expanded = "▼ Steering Queued: ",
+    hl_group = "Comment",
+  },
   error = {
     collapsible = true,
-    block_type = "error",
     prefix_collapsed = "▶ Error: ",
     prefix_expanded = "▼ Error: ",
     hl_group = "DiagnosticError",
@@ -135,6 +147,9 @@ function UI.new(api)
   local self = setmetatable({}, UI)
   self.api = api or vim.api
   self.collapsed_blocks_cache = {}
+  self.active_stream_height = nil
+  self.active_spinners = {}
+  self.sessions = {}
   self.extmark_metadata = {}
   self.block_to_extmark = {}
   self.pending_approvals = {
@@ -160,6 +175,24 @@ end
 function UI.init(api)
   default_instance = UI.new(api)
   return default_instance
+end
+
+function UI:_get_session(bufnr)
+  if not self.sessions then
+    self.sessions = {}
+  end
+  if not self.sessions[bufnr] then
+    self.sessions[bufnr] = {
+      status = "idle",
+      active_spinner_id = nil,
+      active_spinner_extmark_id = nil,
+      active_stream_id = nil,
+      active_stream_start_row = nil,
+      active_stream_height = nil,
+      active_stream_extmark_id = nil,
+    }
+  end
+  return self.sessions[bufnr]
 end
 
 --- Get the default initialized UI instance
@@ -408,24 +441,15 @@ function UI:_expand_inplace_impl(opts)
     pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, cached.extmark_id)
 
     -- 7. Anchor new expanded tracking extmark at the top of the block with indicator above it as a virtual line
-    local prefix = "▼ Thought: "
-    local hl_group = "Comment"
+    local block_config = self.MESSAGE_REGISTRY[cached.type]
+    if not block_config then
+      error(string.format("[CodeSavantUI] Unsupported or unregistered block type: '%s'", tostring(cached.type)))
+    end
 
-    if cached.type == "warning" then
-      prefix = "▼ Warning: "
-      hl_group = "DiagnosticWarn"
-    elseif cached.type == "steering" then
-      prefix = "▼ Steering: "
-      hl_group = "Identifier"
-    elseif cached.type == "error" then
-      prefix = "▼ Error: "
-      hl_group = "DiagnosticError"
-    elseif cached.type == "confirmation" then
-      prefix = "▼ Approve/Decline: "
-      hl_group = "DiagnosticWarn"
-    elseif cached.type == "tool" then
-      prefix = "▼ Tool: "
-      hl_group = "Special"
+    local prefix = block_config.prefix_expanded
+    local hl_group = block_config.hl_group
+    if not prefix or not hl_group then
+      error(string.format("[CodeSavantUI] Missing required registry properties for block type: '%s'", tostring(cached.type)))
     end
 
     local indicator = prefix .. cached.title
@@ -491,9 +515,20 @@ function UI:_collapse_inplace_impl(opts)
     pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, cached.extmark_id)
 
     -- 6. Anchor new collapsed tracking extmark with overlay indicator
-    local display_text = UI.CONSTANTS.GLYPH_COLLAPSED .. cached.title
+    local block_config = self.MESSAGE_REGISTRY[cached.type]
+    if not block_config then
+      error(string.format("[CodeSavantUI] Unsupported or unregistered block type: '%s'", tostring(cached.type)))
+    end
+
+    local prefix = block_config.prefix_collapsed
+    local hl_group = block_config.hl_group
+    if not prefix or not hl_group then
+      error(string.format("[CodeSavantUI] Missing required registry properties for block type: '%s'", tostring(cached.type)))
+    end
+
+    local display_text = prefix .. cached.title
     local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, row, 0, {
-      virt_text = { { display_text, UI.CONSTANTS.HIGHLIGHT_GROUP_COLLAPSED } },
+      virt_text = { { display_text, hl_group } },
       virt_text_pos = "overlay",
     })
 
@@ -736,6 +771,20 @@ function UI:stop_spinner(bufnr, key)
     end
     self.animation_wheel.registry[registry_key] = nil
   end
+
+  local session = self:_get_session(bufnr)
+  if key == "thinking" then
+    session.active_spinner_id = nil
+    session.active_spinner_extmark_id = nil
+  end
+
+  -- Clear from active_spinners table
+  for id, extmark_id in pairs(self.active_spinners) do
+    local ok, pos = pcall(self.api.nvim_buf_get_extmark_by_id, bufnr, self.namespace, extmark_id, {})
+    if not ok or not pos or #pos == 0 then
+      self.active_spinners[id] = nil
+    end
+  end
 end
 
 --- Ensures the global timer wheel is running
@@ -875,10 +924,15 @@ function UI.open_in_float(self, opts)
   end
 end
 
--- Local helper to get current 0-indexed row of thinking extmark
-local function get_thinking_row(self, bufnr)
-  if not self.thinking_extmark_id then return nil end
-  local ok, pos = pcall(self.api.nvim_buf_get_extmark_by_id, bufnr, self.namespace, self.thinking_extmark_id, {})
+-- Local helper to get current 0-indexed row of thinking extmark for a given ID
+local function get_thinking_row(self, bufnr, id)
+  local session = self:_get_session(bufnr)
+  if id and session.active_spinner_id ~= id then
+    return nil
+  end
+  local extmark_id = session.active_spinner_extmark_id
+  if not extmark_id then return nil end
+  local ok, pos = pcall(self.api.nvim_buf_get_extmark_by_id, bufnr, self.namespace, extmark_id, {})
   if ok and pos and #pos > 0 then
     return pos[1]
   end
@@ -902,7 +956,7 @@ function UI:_render_message_impl(bufnr, msg_type, data)
     
     local cached = self.collapsed_blocks_cache[payload.id]
     if not cached then
-      local thinking_row = get_thinking_row(self, bufnr)
+      local thinking_row = get_thinking_row(self, bufnr, vim.b[bufnr].active_model_message_id)
       if thinking_row then
         self:run_programmatic_update(bufnr, function()
           self.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row, false, { "" })
@@ -910,7 +964,7 @@ function UI:_render_message_impl(bufnr, msg_type, data)
         payload.row = thinking_row
       else
         local line_count = self.api.nvim_buf_line_count(bufnr)
-        payload.row = math.max(0, line_count - 1)
+        payload.row = line_count
         self:run_programmatic_update(bufnr, function()
           self.api.nvim_buf_set_lines(bufnr, payload.row, payload.row, false, { "" })
         end)
@@ -919,54 +973,151 @@ function UI:_render_message_impl(bufnr, msg_type, data)
       payload.row = cached.row
     end
 
-    return self:_render_collapsible_handler(bufnr, config.block_type, payload)
+    return self:_render_collapsible_handler(bufnr, msg_type, payload)
   else
-    -- B. Standard Inline Routing Path
+    -- B. Standard Inline Routing Path (Pass table directly to preserve metadata IDs)
     return self:_render_standard_handler(bufnr, msg_type, data)
   end
+end
+
+-- Helper to build consistent, high-contrast virtual lines containing optional subdued separator line and header text
+local function build_virt_lines(self, bufnr, header, header_hl, needs_separator)
+  local virt_lines_spec = {}
+  if needs_separator then
+    local win_width = 80
+    local winids = vim.fn.win_findbuf(bufnr)
+    if winids and #winids > 0 then
+      win_width = vim.api.nvim_win_get_width(winids[1])
+    end
+    -- Low-contrast horizontal divider line using WinSeparator highlight group
+    local separator_line = string.rep("─", math.max(40, win_width - 4))
+    table.insert(virt_lines_spec, { { separator_line, "WinSeparator" } })
+    table.insert(virt_lines_spec, { { "", "Normal" } })
+  end
+  table.insert(virt_lines_spec, { { header, header_hl } })
+  return virt_lines_spec
 end
 
 --- Standard Continuous Text Handler
 function UI:_render_standard_handler(bufnr, msg_type, data)
   local config = self.MESSAGE_REGISTRY[msg_type]
+  local session = self:_get_session(bufnr)
 
   -- 1. Automatically stop spinner if configured
   if config.spinner_to_stop then
-    self:stop_spinner(bufnr, config.spinner_to_stop)
-  end
-
-  -- 2. Automatically clean up thinking placeholder row and extmark
-  if config.clear_thinking_line then
-    local thinking_row = get_thinking_row(self, bufnr)
+    local msg_id = data.id
+    local thinking_row = get_thinking_row(self, bufnr, msg_id)
+    log_debug("SPINNER STOP REQUEST: msg_id=%s, thinking_row=%s, active_model_msg_id=%s", 
+      tostring(msg_id), tostring(thinking_row), tostring(vim.b[bufnr].active_model_message_id))
     if thinking_row then
       self:run_programmatic_update(bufnr, function()
         self.api.nvim_buf_set_lines(bufnr, thinking_row, thinking_row + 1, false, {})
       end)
     end
-    if self.thinking_extmark_id then
-      pcall(self.api.nvim_buf_del_extmark, bufnr, self.namespace, self.thinking_extmark_id)
-      self.thinking_extmark_id = nil
+    self:stop_spinner(bufnr, config.spinner_to_stop)
+    vim.b[bufnr].active_model_message_id = nil
+  end
+
+  -- 7. Automatically start spinner if configured
+  if config.spinner_to_start then
+    -- Clean up any pre-existing active spinner of this same key in this buffer first!
+    self:stop_spinner(bufnr, config.spinner_to_start)
+
+    local new_line_count = self.api.nvim_buf_line_count(bufnr)
+    self:run_programmatic_update(bufnr, function()
+      self.api.nvim_buf_set_lines(bufnr, new_line_count, new_line_count, false, { "" })
+    end)
+    local trailer_row = new_line_count
+    
+    local spinner_opt = require("code_savant").config.spinner or {}
+    local styles = {}
+    for name, _ in pairs(UI.CONSTANTS.SPINNER_STYLES) do
+      table.insert(styles, name)
+    end
+    table.sort(styles)
+    local selected_type = styles[self.spinner_cycle_index] or "equalizer"
+    self.spinner_cycle_index = (self.spinner_cycle_index % #styles) + 1
+
+    local msg_id = data.id
+    vim.b[bufnr].active_model_message_id = msg_id
+    session.active_spinner_id = msg_id
+    log_debug("SPINNER START REQUEST: msg_id=%s, trailer_row=%d, active_model_msg_id=%s", 
+      tostring(msg_id), trailer_row, tostring(vim.b[bufnr].active_model_message_id))
+
+    self:start_spinner(bufnr, config.spinner_to_start, {
+      type = selected_type,
+      custom_frames = spinner_opt.custom_frames,
+      interval = spinner_opt.interval,
+      use_extmark = true,
+      col = UI.CONSTANTS.SPINNER_COLUMN_OFFSET,
+      row = trailer_row,
+      format_fn = function(symbol)
+        local display_text = UI.CONSTANTS.SPINNER_PREFIX .. symbol .. UI.CONSTANTS.SPINNER_SUFFIX
+        return { { display_text, UI.CONSTANTS.SPINNER_HIGHLIGHT } }
+      end,
+    })
+
+    -- Store the newly created extmark in active_spinners mapping for clean cleanup!
+    local registry_key = bufnr .. ":" .. config.spinner_to_start
+    local inst = self.animation_wheel.registry[registry_key]
+    if inst then
+      session.active_spinner_extmark_id = inst.extmark_id
+      self.active_spinners[msg_id] = inst.extmark_id
     end
   end
 
   -- 3. If pure state transition, we exit early
   if config.no_write then
-    if msg_type == "status_idle" or msg_type == "cancel" then
+    if msg_type == "idle" or msg_type == "cancel" then
+      log_debug("STATE TRANSITION RESET: msg_type=%s", msg_type)
+      session.active_stream_id = nil
+      session.active_stream_extmark_id = nil
+      session.active_stream_height = nil
+      session.active_stream_start_row = nil
+      -- Also clear global ones for safety
       self.active_stream_extmark_id = nil
+      self.active_stream_height = nil
+      self.active_stream_start_row = nil
     end
     return
   end
 
   -- 4. Compile text block content
-  local lines = type(data) == "string" and vim.split(data, "\n", { plain = true }) or data
   local text_to_write = {}
-  local indent = config.indent or ""
-  for _, line in ipairs(lines) do
-    table.insert(text_to_write, indent .. line)
-  end
-  if config.trailer then
-    for _, t_line in ipairs(config.trailer) do
-      table.insert(text_to_write, t_line)
+  local is_streaming = (vim.b[bufnr].status == "thinking" and msg_type == "model")
+  local chunk_text = (type(data) == "table" and data.content) and data.content or data
+
+  if is_streaming then
+    -- Accumulate raw delta content chunks in real-time
+    if type(chunk_text) == "string" then
+      if not session.active_stream_accumulator then
+        session.active_stream_accumulator = {}
+      end
+      table.insert(session.active_stream_accumulator, chunk_text)
+    end
+
+    local full_accumulated = table.concat(session.active_stream_accumulator or {}, "")
+    local lines = vim.split(full_accumulated, "\n", { plain = true })
+    local indent = config.indent or ""
+    for _, line in ipairs(lines) do
+      table.insert(text_to_write, indent .. line)
+    end
+    if config.trailer then
+      for _, t_line in ipairs(config.trailer) do
+        table.insert(text_to_write, t_line)
+      end
+    end
+  else
+    local raw_content = chunk_text
+    local lines = type(raw_content) == "string" and vim.split(raw_content, "\n", { plain = true }) or raw_content
+    local indent = config.indent or ""
+    for _, line in ipairs(lines) do
+      table.insert(text_to_write, indent .. line)
+    end
+    if config.trailer then
+      for _, t_line in ipairs(config.trailer) do
+        table.insert(text_to_write, t_line)
+      end
     end
   end
 
@@ -974,21 +1125,38 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
   self:run_programmatic_update(bufnr, function()
     local line_count = self.api.nvim_buf_line_count(bufnr)
 
-    if config.is_streaming then
-      local thinking_row = get_thinking_row(self, bufnr)
-      local target_row = thinking_row or math.max(0, line_count - 1)
-      self.api.nvim_buf_set_lines(bufnr, target_row, target_row + (thinking_row and 1 or 0), false, text_to_write)
+    if is_streaming then
+      local msg_id = type(data) == "table" and data.id or nil
+      local thinking_row = get_thinking_row(self, bufnr, msg_id)
+      self:stop_spinner(bufnr, "thinking")
+      
+      -- Anchor the stream starting row segment exactly once on the first chunk
+      if thinking_row and not session.active_stream_start_row then
+        session.active_stream_start_row = thinking_row
+        session.active_stream_accumulator = { chunk_text } -- Reset accumulator with the first token
+        log_debug("STREAM START ANCHOR SET: active_stream_start_row=%d, msg_id=%s", session.active_stream_start_row, tostring(msg_id))
+      end
+      
+      local target_row = session.active_stream_start_row or math.max(0, line_count - 1)
+      local replace_height = session.active_stream_height or (thinking_row and 1 or 0)
+      
+      log_debug("STREAM WRITE ATOM: msg_id=%s, thinking_row=%s, active_stream_start_row=%s, target_row=%d, replace_height=%d, active_stream_height=%s, lines=%d",
+        tostring(msg_id), tostring(thinking_row), tostring(session.active_stream_start_row), target_row, replace_height, tostring(session.active_stream_height), #text_to_write)
+      
+      self.api.nvim_buf_set_lines(bufnr, target_row, target_row + replace_height, false, text_to_write)
+      session.active_stream_height = #text_to_write
 
-      -- Anchor the stream virtual header exactly once on the first streaming chunk
-      if config.header and not self.active_stream_extmark_id then
-        if not config.header_hl then
-          error(string.format("[CodeSavantUI] Missing required 'header_hl' for streaming message type '%s'", msg_type))
-        end
+      -- Pin the stream virtual header atomically to target_row on every chunk write
+      if config.header then
+        local stream_needs_separator = (target_row > 1)
+        local virt_lines_spec = build_virt_lines(self, bufnr, config.header, config.header_hl, stream_needs_separator)
         local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, target_row, 0, {
-          virt_lines = { { { config.header, config.header_hl } } },
+          id = session.active_stream_extmark_id, -- 🌟 Atomically moves/pins the existing extmark!
+          virt_lines = virt_lines_spec,
           virt_lines_above = true,
         })
-        self.active_stream_extmark_id = extmark_id
+        session.active_stream_extmark_id = extmark_id
+        session.active_stream_id = msg_id
 
         -- Register metadata natively
         self.extmark_metadata[extmark_id] = {
@@ -1010,39 +1178,49 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
         table.insert(final_lines, l)
       end
 
-      local insert_start = is_empty_buffer and 0 or line_count
-      local header_row = needs_separator and insert_start + 1 or insert_start
+      -- If we have an active thinking spinner, write above it, otherwise append at the end
+      local msg_id = type(data) == "table" and data.id or nil
+      local thinking_row = get_thinking_row(self, bufnr, msg_id or vim.b[bufnr].active_model_message_id)
 
-      self.api.nvim_buf_set_lines(bufnr, insert_start, -1, false, final_lines)
+      local insert_start
+      local header_row
+
+      if thinking_row then
+        insert_start = thinking_row
+        header_row = thinking_row + 1
+      else
+        insert_start = is_empty_buffer and 1 or line_count
+        header_row = needs_separator and insert_start + 1 or insert_start
+      end
+
+      log_debug("STATIC WRITE ATOM: msg_type=%s, is_empty_buffer=%s, thinking_row=%s, insert_start=%d, header_row=%d, lines=%d",
+        tostring(msg_type), tostring(is_empty_buffer), tostring(thinking_row), insert_start, header_row, #final_lines)
+
+      if thinking_row then
+        -- This pushes the spinner down cleanly, maintaining the timeline!
+        self.api.nvim_buf_set_lines(bufnr, insert_start, insert_start, false, final_lines)
+      else
+        self.api.nvim_buf_set_lines(bufnr, insert_start, -1, false, final_lines)
+      end
 
       if config.header then
-        if not config.header_hl then
-          error(string.format("[CodeSavantUI] Missing required 'header_hl' for message type '%s'", msg_type))
-        end
+        local virt_lines_spec = build_virt_lines(self, bufnr, config.header, config.header_hl, needs_separator)
         local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, header_row, 0, {
-          virt_lines = { { { config.header, config.header_hl } } },
+          virt_lines = virt_lines_spec,
           virt_lines_above = true,
         })
 
-        -- Track metadata natively
-        local msg_role = "system"
-        if msg_type == "user_prompt" or msg_type == "user_steering" then
-          msg_role = "user"
+        -- Track metadata natively (Fail loudly if configuration is incomplete)
+        if not config.role then
+          error(string.format("[CodeSavantUI] Missing required 'role' for message type '%s'", msg_type))
         end
 
         self.extmark_metadata[extmark_id] = {
           id = "msg_" .. tostring(extmark_id),
           type = "message",
-          role = msg_role,
+          role = config.role,
           status = "inline",
         }
-      end
-
-      -- 6. Anchor thinking tracking extmark on placeholder row
-      if config.trailer then
-        local new_line_count = self.api.nvim_buf_line_count(bufnr)
-        local trailer_row = new_line_count - 2
-        self.thinking_extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, trailer_row, 0, {})
       end
     end
 
@@ -1052,28 +1230,6 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
       pcall(self.api.nvim_win_set_cursor, winids[1], { self.api.nvim_buf_line_count(bufnr), 0 })
     end
   end)
-
-  -- 7. Automatically start spinner if configured
-  if config.spinner_to_start then
-    local spinner_opt = require("code_savant").config.spinner or {}
-    local styles = {}
-    for name, _ in pairs(UI.CONSTANTS.SPINNER_STYLES) do
-      table.insert(styles, name)
-    end
-    table.sort(styles)
-    local selected_type = styles[self.spinner_cycle_index] or "equalizer"
-    self.spinner_cycle_index = (self.spinner_cycle_index % #styles) + 1
-
-    self:start_spinner(bufnr, config.spinner_to_start, {
-      type = selected_type,
-      custom_frames = spinner_opt.custom_frames,
-      interval = spinner_opt.interval,
-      use_extmark = true,
-      col = 4,
-      row = function() return get_thinking_row(self, bufnr) end,
-      format_fn = function(symbol) return { { symbol, "Special" } } end,
-    })
-  end
 end
 
 --- Collapsible Block Delegation Handler
@@ -1245,9 +1401,10 @@ end
 --- @param bufnr number The buffer number.
 --- @param obj_type string "message", "thought", or "tool".
 --- @param inner boolean Whether to return the inner range (true) or around range (false).
+--- @param target_row number? Optional target row (0-indexed) to override active cursor row (highly useful for CI/CD deterministic tests)
 --- @return number|nil, number? The start and end row, or nil if not found.
-function UI:resolve_text_object_range(bufnr, obj_type, inner)
-  local cursor_row = self.api.nvim_win_get_cursor(0)[1] - 1
+function UI:resolve_text_object_range(bufnr, obj_type, inner, target_row)
+  local cursor_row = target_row or (self.api.nvim_win_get_cursor(0)[1] - 1)
   local extmarks = self.api.nvim_buf_get_extmarks(bufnr, self.namespace, 0, -1, {})
   local line_count = self.api.nvim_buf_line_count(bufnr)
 
@@ -1266,7 +1423,7 @@ function UI:resolve_text_object_range(bufnr, obj_type, inner)
       elseif obj_type == "thought" then
         matched = (meta.type == "thought")
       elseif obj_type == "tool" then
-        matched = (meta.type == "tool" or meta.type == "confirmation")
+        matched = (meta.type == "tool" or meta.type == "confirmation" or meta.type == "function_call" or meta.type == "function_response")
       end
 
       if matched then
@@ -1395,7 +1552,7 @@ function UI:jump_to_extmark(obj_type, forward)
       elseif obj_type == "thought" then
         matched = (meta.type == "thought")
       elseif obj_type == "tool" then
-        matched = (meta.type == "tool" or meta.type == "confirmation")
+        matched = (meta.type == "tool" or meta.type == "confirmation" or meta.type == "function_call" or meta.type == "function_response")
       end
 
       if matched then

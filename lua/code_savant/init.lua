@@ -13,6 +13,14 @@ local Network = require("code_savant.network")
 local UI = require("code_savant.ui").get_instance()
 local Layout = require("code_savant.layout")
 
+local function log_debug(fmt, ...)
+  local file = io.open("/tmp/code_savant_client.log", "a")
+  if file then
+    file:write(string.format("[%s] [INIT] " .. fmt .. "\n", os.date("%H:%M:%S"), ...))
+    file:close()
+  end
+end
+
 local ERROR_PREFIX = "[CodeSavant Error] "
 
 local function notify_err(msg)
@@ -418,79 +426,44 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
 
             -- 2. Render turns sequentially using the unified pipeline
             for msg_idx, msg in ipairs(chat_history) do
-              local role = msg.role
               if msg.parts and #msg.parts > 0 then
-                if role == "user" then
-                  -- Aggregate user text parts
-                  local user_text = ""
-                  for _, part in ipairs(msg.parts) do
-                    if part.text then
-                      if user_text ~= "" then
-                        user_text = user_text .. "\n"
-                      end
-                      user_text = user_text .. part.text
-                    end
+                for part_idx, part in ipairs(msg.parts) do
+                  -- 🛡️ Fail Loudly if the loaded block type is unsupported/unregistered
+                  local config = UI.MESSAGE_REGISTRY[part.type]
+                  if not config then
+                    error(string.format("[CodeSavant] Unsupported or unregistered historical block type: '%s'", tostring(part.type)))
                   end
-                  if user_text ~= "" then
-                    UI:render_message(bufnr, "user_prompt", user_text)
-                  end
-                elseif role == "model" then
-                  for part_idx, part in ipairs(msg.parts) do
-                    local block_type = part.type
-                    if block_type == "text" then
-                      if part.text and part.text ~= "" then
-                        UI:render_message(bufnr, "model_response", part.text)
-                      end
-                    else
-                      -- Collapsible block type (thought, tool, warning, error, etc.)
-                      local resolved_type = block_type or "thought"
-                      local block_id = string.format("loaded_%s_%s_%d_%d", resolved_type, tostring(parsed.result.session_id), msg_idx, part_idx)
-                      local title = part.title
-                      if not title then
-                        error(string.format("[CodeSavant] Missing required field 'title' for collapsible block type '%s'", resolved_type))
-                      end
-                      local content = part.text or ""
 
-                      UI:render_message(bufnr, resolved_type, {
-                        id = block_id,
-                        title = title,
-                        content = content,
-                      })
-                    end
-                  end
+                  UI:render_message(bufnr, part.type, {
+                    id = part.id,
+                    title = part.title,
+                    content = part.full_content or "",
+                  })
                 end
               end
             end
           end
 
-          -- Match incoming server notifications
-          if parsed.method == "telemetry/collapsed_block" then
-            local params = parsed.params or {}
-            UI:render_message(bufnr, params.type, {
-              id = params.id,
-              title = params.title,
-              content = params.full_content,
+          -- 100% Stateless, registry-driven pass-through stream listener
+          if parsed.type then
+            local config = UI.MESSAGE_REGISTRY[parsed.type]
+            if not config then
+              error(string.format("[CodeSavant] Unsupported or unregistered telemetry payload type: '%s'", tostring(parsed.type)))
+            end
+
+            log_debug("INCOMING SOCKET PAYLOAD: type=%s, id=%s, title=%s, current_buf_status=%s", 
+              tostring(parsed.type), tostring(parsed.id), tostring(parsed.title), tostring(vim.b[bufnr].status))
+
+            -- Automatically set buffer-local status if declared in the registry configuration
+            if config.status_value then
+              vim.b[bufnr].status = config.status_value
+            end
+
+            UI:render_message(bufnr, parsed.type, {
+              id = parsed.id,
+              title = parsed.title,
+              content = parsed.full_content,
             })
-
-          elseif parsed.method == "telemetry/error" then
-            local params = parsed.params or {}
-            notify_err(tostring(params.message))
-            UI:render_message(bufnr, "system_error", params.message)
-
-          elseif parsed.method == "telemetry/message" then
-            local params = parsed.params or {}
-            local text = params.text or ""
-            if text ~= "" then
-              UI:render_message(bufnr, "agent_stream", text)
-            end
-
-          elseif parsed.method == "telemetry/status" then
-            local params = parsed.params or {}
-            vim.b[bufnr].status = params.status
-
-            if params.status == "idle" then
-              UI:render_message(bufnr, "status_idle")
-            end
           end
 
           -- Scroll history window to the bottom to follow streaming
@@ -532,14 +505,12 @@ local function handle_enter(input_bufnr)
     return
   end
 
+  -- Clear input buffer immediately
+  vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {})
+
   local status = vim.b[history_bufnr].status or "idle"
   if status == "thinking" then
-    UI:render_message(history_bufnr, "user_steering", lines)
-
-    -- Clear input buffer
-    vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {})
-
-    -- Send steering request
+    -- Send steering request (Let server echo it back on consumption)
     local ok, err = pcall(Network.send_request, conn, "session/inject_steering", {
       session_id = conn.session_id,
       text = prompt_text
@@ -550,12 +521,7 @@ local function handle_enter(input_bufnr)
     return
   end
 
-  UI:render_message(history_bufnr, "user_prompt", lines)
-
-  -- Clear input buffer
-  vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {})
-
-  -- Send prompt
+  -- Send prompt (Let server echo it back)
   Network.send_prompt(conn, prompt_text)
 end
 

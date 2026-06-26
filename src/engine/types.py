@@ -356,6 +356,7 @@ class EventType(str, Enum):
     TELEMETRY_THOUGHT = "telemetry:thought"
     TELEMETRY_CONTENT = "telemetry:content"
     TELEMETRY_ACTIVITY = "telemetry:activity"
+    TELEMETRY_USER = "telemetry:user"
 
 
 class TelemetryActivityType(str, Enum):

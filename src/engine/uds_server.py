@@ -40,6 +40,65 @@ from engine.types import (
 logger = logging.getLogger("engine.uds_server")
 
 
+def coerce_block_to_ui(
+    part_type: str, 
+    data: Dict[str, Any], 
+    block_id: Optional[Any] = None, 
+    role: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Unified Coercion Source of Truth.
+    Standardizes both live telemetry events and historical database records 
+    into a single visual contract without any silent fallbacks.
+    """
+    # 1. Dynamically resolve generic database "text" parts to the active role
+    if part_type == "text" and role:
+        part_type = role
+
+    # 2. Resolve ID strictly
+    resolved_id = block_id or data.get("id") or data.get("block_id")
+    if not resolved_id:
+        raise KeyError(f"Missing required unique identifier 'id' for part type: {part_type}")
+
+    # 3. Resolve content strictly from standard fields
+    if "text" in data:
+        content = data["text"]
+    elif "args" in data:
+        content = f"Arguments:\n{json.dumps(data['args'], indent=2)}"
+    elif "response" in data:
+        content = f"Response:\n{json.dumps(data['response'], indent=2)}"
+    else:
+        raise KeyError(f"Missing required content field ('text', 'args', or 'response') in data for part type: {part_type}")
+
+    # 4. Resolve title strictly based on part_type (keeping types identical 1:1)
+    if part_type in ("user", "model", "thinking", "idle", "cancel"):
+        title = None
+    elif part_type == "thought":
+        title = data["title"]
+    elif part_type == "function_call":
+        title = f"Invoking tool: {data['name']}"
+    elif part_type == "function_response":
+        title = f"Tool completed: {data['name']}"
+    elif part_type == "confirmation":
+        title = f"⚠️ Authorization Required: Invoke tool {data['name']}"
+        content = f"{content}\n\nPress 'a' to Approve or 'd' to Decline."
+    elif part_type == "warning":
+        title = data["title"]
+    elif part_type == "steering":
+        title = "👤 Steering Directive Injected"
+    elif part_type == "steering_queued":
+        title = "👤 Steering Directive Queued"
+    else:
+        raise ValueError(f"Unknown part_type: {part_type}")
+
+    return {
+        "id": str(resolved_id),
+        "type": part_type,
+        "title": title,
+        "full_content": content
+    }
+
+
 class JsonRpcCodec:
     """
     Encoder/Decoder utility for formatting and parsing JSON-RPC 2.0 payloads.
@@ -78,19 +137,6 @@ class JsonRpcCodec:
         frame = JsonRpcErrorResponse(
             error=error_payload.model_dump(exclude_none=True), id=msg_id
         )
-        return (frame.model_dump_json() + JsonRpcCodec.DELIMITER).encode("utf-8")
-
-    @staticmethod
-    def encode_notification(method: str, params: Dict[str, Any]) -> bytes:
-        """Formats a notification into a newline-delimited JSON-RPC 2.0 payload."""
-        if not isinstance(method, str):
-            raise TypeError("method must be a string, got " + type(method).__name__)
-        if not method.strip():
-            raise ValueError("method cannot be empty or whitespace-only")
-        if not isinstance(params, dict):
-            raise TypeError("params must be a dictionary, got " + type(params).__name__)
-
-        frame = JsonRpcNotification(method=method, params=params)
         return (frame.model_dump_json() + JsonRpcCodec.DELIMITER).encode("utf-8")
 
 
@@ -527,12 +573,6 @@ class UdsServer:
 
         async def run_executor_safely() -> None:
             try:
-                # Append user prompt to session history
-                user_msg = ChatMessage(
-                    role=MessageRole.USER.value, parts=[TextPart(text=text)]
-                )
-                await state.session.append_message(user_msg)
-
                 inputs = {"target_dir": str(state.workspace_path)}
                 await executor.run(context, inputs)
             except Exception as e:
@@ -540,22 +580,16 @@ class UdsServer:
                     f"Executor exception in session {session_id}: {e}", exc_info=True
                 )
                 try:
-                    # Stream the error details directly as a structured telemetry/error notification
-                    notification = JsonRpcCodec.encode_notification(
-                        method="telemetry/error",
-                        params={
-                            "session_id": str(session_id),
-                            "message": f"Executor crashed: {e}"
-                        },
-                    )
-                    writer.write(notification)
+                    # Stream the error details directly as a structured flat error block
+                    coerced = coerce_block_to_ui("error", {"title": "⚠️ Executor Crashed", "text": f"Error detail:\n{e}"}, block_id=executor.last_model_message_id)
+                    writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
 
                     # Send idle status to cleanly reset the UI's thinking indicator
-                    status_notif = JsonRpcCodec.encode_notification(
-                        method="telemetry/status",
-                        params={"session_id": str(session_id), "status": "idle"},
-                    )
-                    writer.write(status_notif)
+                    writer.write(json.dumps({
+                        "session_id": str(session_id),
+                        "type": "status",
+                        "status": "idle",
+                    }).encode("utf-8") + b"\n")
                     await writer.drain()
                 except Exception as write_err:
                     logger.error(
@@ -650,24 +684,12 @@ class UdsServer:
                 pass
 
             # Write a collapsible warning block to indicate the termination cleanly
-            notification = JsonRpcCodec.encode_notification(
-                method="telemetry/collapsed_block",
-                params={
-                    "session_id": session_id,
-                    "id": uuid.uuid4(),
-                    "type": "warning",
-                    "title": "🛑 Execution Terminated by User",
-                    "full_content": "The active execution loop was aborted and all outstanding operations cancelled.",
-                },
-            )
-            writer.write(notification)
+            coerced = coerce_block_to_ui("warning", {"title": "🛑 Execution Terminated by User", "text": "The active execution loop was aborted and all outstanding operations cancelled."}, block_id=state.executor.last_model_message_id)
+            writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
 
             # Set status to idle to cleanly reset UI
-            status_notif = JsonRpcCodec.encode_notification(
-                method="telemetry/status",
-                params={"session_id": session_id, "status": "idle"},
-            )
-            writer.write(status_notif)
+            coerced_cancel = coerce_block_to_ui("cancel", {"text": ""}, block_id=state.executor.last_model_message_id)
+            writer.write(json.dumps({"session_id": str(session_id), **coerced_cancel}).encode("utf-8") + b"\n")
             await writer.drain()
 
         result = {"status": "cancelled"}
@@ -844,7 +866,14 @@ class UdsServer:
             "status": "active",
             "metadata": session.metadata.model_dump(mode="json"),
             "chat_history": [
-                msg.model_dump(mode="json") for msg in session.chat_history
+                {
+                    "role": msg.role,
+                    "parts": [
+                        coerce_block_to_ui(p.type, p.model_dump(), role=msg.role)
+                        for p in msg.parts
+                    ],
+                }
+                for msg in session.chat_history
             ],
         }
         writer.write(JsonRpcCodec.encode_response(result, msg_id))
@@ -867,6 +896,7 @@ class UdsServer:
         bus.subscribe(EventType.TELEMETRY_CONTENT.value, listener)
         bus.subscribe(EventType.TELEMETRY_ACTIVITY.value, listener)
         bus.subscribe(EventType.TOOL_CONFIRMATION_REQUEST.value, listener)
+        bus.subscribe(EventType.TELEMETRY_USER.value, listener)
 
         try:
             while True:
@@ -907,27 +937,20 @@ class UdsServer:
                     estimated_tokens = int(estimate_text_tokens(current_accumulation))
                     dynamic_title = f"{subject_title} ({elapsed_seconds:.1f}s, {estimated_tokens} tokens)"
 
-                    notification = JsonRpcCodec.encode_notification(
-                        method="telemetry/collapsed_block",
-                        params={
-                            "session_id": session_id,
-                            "id": block_id,
-                            "prompt_id": prompt_id_val,
-                            "type": "thought",
-                            "title": dynamic_title,
-                            "full_content": current_accumulation,
-                        },
-                    )
-                    writer.write(notification)
+                    coerced = coerce_block_to_ui("thought", {"title": dynamic_title, "text": current_accumulation}, block_id=block_id)
+                    writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
                     await writer.drain()
 
                 elif event_type == EventType.TELEMETRY_CONTENT:
                     text = payload.text
-                    notification = JsonRpcCodec.encode_notification(
-                        method="telemetry/message",
-                        params={"session_id": str(session_id), "text": text},
-                    )
-                    writer.write(notification)
+                    coerced = coerce_block_to_ui("model", {"text": text}, block_id=payload.block_id)
+                    writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                    await writer.drain()
+
+                elif event_type == EventType.TELEMETRY_USER:
+                    text = payload.text
+                    coerced = coerce_block_to_ui("user", {"text": text}, block_id=payload.block_id)
+                    writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
                     await writer.drain()
 
                 elif event_type == EventType.TOOL_CONFIRMATION_REQUEST:
@@ -937,19 +960,8 @@ class UdsServer:
                     tc_name = tc.name
                     tc_args = tc.args
 
-                    args_str = json.dumps(tc_args, indent=2) if tc_args else ""
-                    notification = JsonRpcCodec.encode_notification(
-                        method="telemetry/collapsed_block",
-                        params={
-                            "session_id": session_id,
-                            "id": block_id,
-                            "prompt_id": prompt_id_val,
-                            "type": "confirmation",
-                            "title": f"⚠️ Authorization Required: Invoke tool {tc_name}",
-                            "full_content": f"Arguments:\n{args_str}\n\nPress 'a' to Approve or 'd' to Decline.",
-                        },
-                    )
-                    writer.write(notification)
+                    coerced = coerce_block_to_ui("confirmation", {"name": tc_name, "args": tc_args}, block_id=block_id)
+                    writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
                     await writer.drain()
 
                 elif event_type == EventType.TELEMETRY_ACTIVITY:
@@ -958,45 +970,23 @@ class UdsServer:
                     act_block_id = payload.block_id
 
                     if activity_type == TelemetryActivityType.TURN_START:
-                        notification = JsonRpcCodec.encode_notification(
-                            method="telemetry/status",
-                            params={
-                                "session_id": session_id,
-                                "status": "thinking",
-                                "prompt_id": prompt_id_val,
-                            },
-                        )
-                        writer.write(notification)
+                        coerced = coerce_block_to_ui("thinking", {"text": ""}, block_id=act_block_id)
+                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
                         await writer.drain()
 
                     elif activity_type == TelemetryActivityType.RECOVERY:
-                        notification = JsonRpcCodec.encode_notification(
-                            method="telemetry/collapsed_block",
-                            params={
-                                "session_id": session_id,
-                                "id": act_block_id,
-                                "prompt_id": prompt_id_val,
-                                "type": "warning",
-                                "title": "⚠️ Execution Limit Exceeded (Recovery)",
-                                "full_content": payload.msg or "",
-                            },
-                        )
-                        writer.write(notification)
+                        coerced = coerce_block_to_ui("warning", {"title": "⚠️ Execution Limit Exceeded (Recovery)", "text": payload.msg or ""}, block_id=act_block_id)
+                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
                         await writer.drain()
 
                     elif activity_type == TelemetryActivityType.STEERING_INJECTED:
-                        notification = JsonRpcCodec.encode_notification(
-                            method="telemetry/collapsed_block",
-                            params={
-                                "session_id": session_id,
-                                "id": act_block_id,
-                                "prompt_id": prompt_id_val,
-                                "type": "steering",
-                                "title": "👤 Steering Directive Injected",
-                                "full_content": payload.msg or "",
-                            },
-                        )
-                        writer.write(notification)
+                        coerced = coerce_block_to_ui("steering", {"text": payload.msg or ""}, block_id=act_block_id)
+                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                        await writer.drain()
+
+                    elif activity_type == TelemetryActivityType.STEERING_QUEUED:
+                        coerced = coerce_block_to_ui("steering_queued", {"text": payload.msg or ""}, block_id=act_block_id)
+                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
                         await writer.drain()
 
                     elif activity_type in (
@@ -1005,57 +995,26 @@ class UdsServer:
                     ):
                         response_text = getattr(payload, "response", None)
                         if activity_type == TelemetryActivityType.END and response_text:
-                            msg_notif = JsonRpcCodec.encode_notification(
-                                method="telemetry/message",
-                                params={
-                                    "session_id": session_id,
-                                    "text": str(response_text),
-                                },
-                            )
-                            writer.write(msg_notif)
+                            coerced = coerce_block_to_ui("model", {"text": str(response_text)}, block_id=act_block_id)
+                            writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
                             await writer.drain()
 
-                        notification = JsonRpcCodec.encode_notification(
-                            method="telemetry/status",
-                            params={"session_id": session_id, "status": "idle"},
-                        )
-                        writer.write(notification)
+                        coerced = coerce_block_to_ui("idle", {"text": ""}, block_id=act_block_id)
+                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
                         await writer.drain()
 
                     elif activity_type == TelemetryActivityType.TOOL_CALL_START:
                         name = payload.name or ""
                         args = payload.args or {}
-                        args_str = json.dumps(args, indent=2) if args else ""
-                        notification = JsonRpcCodec.encode_notification(
-                            method="telemetry/collapsed_block",
-                            params={
-                                "session_id": session_id,
-                                "id": act_block_id,
-                                "type": "tool",
-                                "title": f"Invoking tool: {name}",
-                                "full_content": f"Arguments:\n{args_str}",
-                            },
-                        )
-                        writer.write(notification)
+                        coerced = coerce_block_to_ui("function_call", {"name": name, "args": args}, block_id=act_block_id)
+                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
                         await writer.drain()
 
                     elif activity_type == TelemetryActivityType.TOOL_CALL_END:
                         name = payload.name or ""
                         resp = payload.response
-                        resp_str = (
-                            json.dumps(resp, indent=2) if resp is not None else ""
-                        )
-                        notification = JsonRpcCodec.encode_notification(
-                            method="telemetry/collapsed_block",
-                            params={
-                                "session_id": session_id,
-                                "id": act_block_id,
-                                "type": "tool",
-                                "title": f"Tool completed: {name}",
-                                "full_content": f"Response:\n{resp_str}",
-                            },
-                        )
-                        writer.write(notification)
+                        coerced = coerce_block_to_ui("function_response", {"name": name, "response": resp}, block_id=act_block_id)
+                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
                         await writer.drain()
 
         except asyncio.CancelledError:
@@ -1067,3 +1026,4 @@ class UdsServer:
             bus.unsubscribe(EventType.TELEMETRY_CONTENT.value, listener)
             bus.unsubscribe(EventType.TELEMETRY_ACTIVITY.value, listener)
             bus.unsubscribe(EventType.TOOL_CONFIRMATION_REQUEST.value, listener)
+            bus.unsubscribe(EventType.TELEMETRY_USER.value, listener)
