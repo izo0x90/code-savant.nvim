@@ -92,48 +92,64 @@ UI.MESSAGE_REGISTRY = {
     prefix_collapsed = "▶ Thought: ",
     prefix_expanded = "▼ Thought: ",
     hl_group = "Comment",
+    border_top = "╭────────────────────────Thought Space────────────────────────╮",
+    border_bottom = "╰─────────────────────────────────────────────────────────────╯",
   },
   function_call = {
     collapsible = true,
     prefix_collapsed = "▶ Tool Call: ",
     prefix_expanded = "▼ Tool Call: ",
     hl_group = "Special",
+    border_top = "╭─────────────────────────Tool Input─────────────────────────╮",
+    border_bottom = "╰─────────────────────────────────────────────────────────────╯",
   },
   function_response = {
     collapsible = true,
     prefix_collapsed = "▶ Tool Response: ",
     prefix_expanded = "▼ Tool Response: ",
     hl_group = "Special",
+    border_top = "╭────────────────────────Tool Response────────────────────────╮",
+    border_bottom = "╰─────────────────────────────────────────────────────────────╯",
   },
   confirmation = {
     collapsible = true,
     prefix_collapsed = "▶ Approve/Decline: ",
     prefix_expanded = "▼ Approve/Decline: ",
     hl_group = "DiagnosticWarn",
+    border_top = "╭─────────────────────Approval Requested──────────────────────╮",
+    border_bottom = "╰─────────────────────────────────────────────────────────────╯",
   },
   warning = {
     collapsible = true,
     prefix_collapsed = "▶ Warning: ",
     prefix_expanded = "▼ Warning: ",
     hl_group = "DiagnosticWarn",
+    border_top = "╭───────────────────────────Warning───────────────────────────╮",
+    border_bottom = "╰─────────────────────────────────────────────────────────────╯",
   },
   steering = {
     collapsible = true,
     prefix_collapsed = "▶ Steering: ",
     prefix_expanded = "▼ Steering: ",
     hl_group = "Identifier",
+    border_top = "╭──────────────────────Steering Directive─────────────────────╮",
+    border_bottom = "╰─────────────────────────────────────────────────────────────╯",
   },
   steering_queued = {
     collapsible = true,
     prefix_collapsed = "▶ Steering Queued: ",
     prefix_expanded = "▼ Steering Queued: ",
     hl_group = "Comment",
+    border_top = "╭──────────────────Steering Directive Queued──────────────────╮",
+    border_bottom = "╰─────────────────────────────────────────────────────────────╯",
   },
   error = {
     collapsible = true,
     prefix_collapsed = "▶ Error: ",
     prefix_expanded = "▼ Error: ",
     hl_group = "DiagnosticError",
+    border_top = "╭────────────────────────────Error────────────────────────────╮",
+    border_bottom = "╰─────────────────────────────────────────────────────────────╯",
   }
 }
 
@@ -279,16 +295,20 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
     end
 
     if target_row then
+      local block_config = self.MESSAGE_REGISTRY[block_type] or self.MESSAGE_REGISTRY["thought"]
+      local border_top = block_config.border_top or self.CONSTANTS.BORDER_TOP
+      local border_bottom = block_config.border_bottom or self.CONSTANTS.BORDER_BOTTOM
+
       local lines = vim.split(full_content, "\n", { plain = true })
       local display_lines = {}
-      if self.CONSTANTS.BORDER_TOP and self.CONSTANTS.BORDER_TOP ~= "" then
-        table.insert(display_lines, self.CONSTANTS.BORDER_TOP)
+      if border_top and border_top ~= "" then
+        table.insert(display_lines, border_top)
       end
       for _, line in ipairs(lines) do
         table.insert(display_lines, line)
       end
-      if self.CONSTANTS.BORDER_BOTTOM and self.CONSTANTS.BORDER_BOTTOM ~= "" then
-        table.insert(display_lines, self.CONSTANTS.BORDER_BOTTOM)
+      if border_bottom and border_bottom ~= "" then
+        table.insert(display_lines, border_bottom)
       end
       local height = #display_lines
       local prev_height = previous_height or 1
@@ -304,7 +324,6 @@ function UI:_on_collapsed_block_impl(id, block_type, title, full_content, bufnr,
         end
 
         -- Re-anchor the expanded indicator above the updated lines
-        local block_config = self.MESSAGE_REGISTRY[block_type] or self.MESSAGE_REGISTRY["thought"]
         local indicator = block_config.prefix_expanded .. title
         local hl_group = block_config.hl_group
         local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, target_row, 0, {
@@ -418,16 +437,20 @@ function UI:_expand_inplace_impl(opts)
   local row = pos[1]
 
   -- 4. Format expanded content
+  local block_config = self.MESSAGE_REGISTRY[cached.type] or self.MESSAGE_REGISTRY["thought"]
+  local border_top = block_config.border_top or UI.CONSTANTS.BORDER_TOP
+  local border_bottom = block_config.border_bottom or UI.CONSTANTS.BORDER_BOTTOM
+
   local lines = vim.split(cached.full_content, "\n", { plain = true })
   local display_lines = {}
-  if UI.CONSTANTS.BORDER_TOP and UI.CONSTANTS.BORDER_TOP ~= "" then
-    table.insert(display_lines, UI.CONSTANTS.BORDER_TOP)
+  if border_top and border_top ~= "" then
+    table.insert(display_lines, border_top)
   end
   for _, line in ipairs(lines) do
     table.insert(display_lines, line)
   end
-  if UI.CONSTANTS.BORDER_BOTTOM and UI.CONSTANTS.BORDER_BOTTOM ~= "" then
-    table.insert(display_lines, UI.CONSTANTS.BORDER_BOTTOM)
+  if border_bottom and border_bottom ~= "" then
+    table.insert(display_lines, border_bottom)
   end
 
   local height = #display_lines
@@ -982,6 +1005,11 @@ end
 
 -- Helper to build consistent, high-contrast virtual lines containing optional subdued separator line and header text
 local function build_virt_lines(self, bufnr, header, header_hl, needs_separator)
+  -- Gracefully fallback to "Identifier" if highlight group is undefined
+  if not header_hl then
+    header_hl = "Identifier"
+  end
+
   local virt_lines_spec = {}
   if needs_separator then
     local win_width = 80
@@ -1595,6 +1623,97 @@ end
 
 function UI.jump_to_extmark_static(obj_type, forward)
   return UI.get_instance():jump_to_extmark(obj_type, forward)
+end
+
+-- Keeps track of the active floating HUD windows
+UI.active_huds = {} -- Map of bufnr -> { win_id = integer, bufnr = integer }
+
+function UI:update_sticky_hud(parent_bufnr)
+  if not parent_bufnr or parent_bufnr == 0 or not self.api.nvim_buf_is_valid(parent_bufnr) then
+    return
+  end
+
+  local parent_buf = parent_bufnr
+  if vim.bo[parent_buf].filetype == "code_savant_input" then
+    parent_buf = vim.b[parent_buf].partner_buf or parent_buf
+  end
+
+  local session = self:_get_session(parent_buf)
+  local parent_session_id = vim.b[parent_buf].session_id or ""
+  if parent_session_id == "" then return end
+
+  -- 1. Get all active subagents for this parent session
+  local active_subagents = {}
+  for _, s in pairs(self.sessions) do
+    if s.parent_id == parent_session_id and s.status == "thinking" then
+      table.insert(active_subagents, s)
+    end
+  end
+
+  -- If no active agents, and HUD is open, we can close it
+  if #active_subagents == 0 then
+    self:close_sticky_hud(parent_bufnr)
+    return
+  end
+
+  -- 2. Ensure HUD buffer and window exist
+  local hud = self.active_huds[parent_bufnr]
+  if not hud or not self.api.nvim_win_is_valid(hud.win_id) then
+    local hud_buf = self.api.nvim_create_buf(false, true)
+    self.api.nvim_buf_set_option(hud_buf, "buftype", "nofile")
+    self.api.nvim_buf_set_option(hud_buf, "bufhidden", "wipe")
+    self.api.nvim_buf_set_option(hud_buf, "swapfile", false)
+
+    -- Find parent window
+    local parent_winids = vim.fn.win_findbuf(parent_bufnr)
+    if not parent_winids or #parent_winids == 0 then return end
+    local parent_win = parent_winids[1]
+    local parent_width = self.api.nvim_win_get_width(parent_win)
+
+    local win_id = self.api.nvim_open_win(hud_buf, false, {
+      relative = "win",
+      win = parent_win,
+      row = 0,
+      col = 0,
+      width = parent_width,
+      height = math.min(5, #active_subagents + 1),
+      style = "minimal",
+      border = "single",
+    })
+
+    hud = { win_id = win_id, bufnr = hud_buf }
+    self.active_huds[parent_bufnr] = hud
+  end
+
+  -- 3. Update HUD buffer lines
+  local lines = {}
+  table.insert(lines, " 󰒋  Active Swarm Subagents:")
+  for _, s in ipairs(active_subagents) do
+    local last_up = s.last_update
+    if type(last_up) ~= "string" or last_up == "" then
+      last_up = "idle"
+    end
+    if #last_up > 50 then last_up = last_up:sub(1, 47) .. "..." end
+    table.insert(lines, string.format("   ● [%s] - %s", tostring(s.agent_name), last_up))
+  end
+
+  -- Enable modifiable to set lines, then lock
+  self.api.nvim_buf_set_option(hud.bufnr, "modifiable", true)
+  self.api.nvim_buf_set_lines(hud.bufnr, 0, -1, false, lines)
+  self.api.nvim_buf_set_option(hud.bufnr, "modifiable", false)
+
+  -- Dynamically adjust height of float
+  self.api.nvim_win_set_height(hud.win_id, math.min(6, #lines))
+end
+
+function UI:close_sticky_hud(parent_bufnr)
+  local hud = self.active_huds[parent_bufnr]
+  if hud then
+    if self.api.nvim_win_is_valid(hud.win_id) then
+      pcall(self.api.nvim_win_close, hud.win_id, true)
+    end
+    self.active_huds[parent_bufnr] = nil
+  end
 end
 
 --- Module level static function forwarders to support both singleton and class usage patterns

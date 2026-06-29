@@ -216,7 +216,8 @@ class SessionManager:
                 created_at=datetime.datetime.now().isoformat(),
                 last_updated=datetime.datetime.now().isoformat(),
                 turn_count=0,
-                agent_name=agent_name
+                agent_name=agent_name,
+                parent_session_id=str(parent_session_id)
             )
         )
         

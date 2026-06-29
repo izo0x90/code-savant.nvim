@@ -397,7 +397,8 @@ class UdsServer:
         await session_manager.save_session(session)
 
         # Setup event bus and state
-        bus = MessageBus()
+        bus = MessageBus(session_id=session_id)
+        bus.agent_name = agent_profile
         telemetry_task = asyncio.create_task(
             self.stream_session_telemetry(session_id, writer, bus)
         )
@@ -637,16 +638,15 @@ class UdsServer:
             raise JsonRpcError(-32602, f"Active session '{session_id}' not found")
 
         from engine.types import (
-            EventEnvelope,
+            Event,
             EventType,
             ToolConfirmationResponsePayload,
         )
 
         await state.bus.publish(
-            EventEnvelope(
+            Event(
                 event_type=EventType.TOOL_CONFIRMATION_RESPONSE,
                 payload=ToolConfirmationResponsePayload(confirmed=confirmed),
-                sender="user",
                 correlation_id=str(call_id),
             )
         )
@@ -847,7 +847,8 @@ class UdsServer:
             raise JsonRpcError(-32603, f"Internal error loading session: {e}") from e
 
         # Setup event bus and state
-        bus = MessageBus()
+        bus = MessageBus(session_id=session_id)
+        bus.agent_name = session.metadata.agent_name
         telemetry_task = asyncio.create_task(
             self.stream_session_telemetry(session_id, writer, bus)
         )
@@ -869,7 +870,7 @@ class UdsServer:
                 {
                     "role": msg.role,
                     "parts": [
-                        coerce_block_to_ui(p.type, p.model_dump(), role=msg.role)
+                        coerce_block_to_ui(p.type, p.model_dump(), block_id=msg.id, role=msg.role)
                         for p in msg.parts
                     ],
                 }
@@ -888,6 +889,15 @@ class UdsServer:
         active_block_chunks: list[str] = []
         active_block_start_time: float = 0.0
         active_block_title: str = FALLBACK_THOUGHT_TITLE
+
+        def send_payload(coerced_block: dict[str, Any], env: EventEnvelope[Any]):
+            full_frame = {
+                "session_id": str(env.session_id) if env.session_id else str(session_id),
+                "parent_session_id": str(env.parent_session_id) if env.parent_session_id else None,
+                "agent_name": env.agent_name,
+                **coerced_block
+            }
+            writer.write(json.dumps(full_frame).encode("utf-8") + b"\n")
 
         async def listener(envelope: EventEnvelope[Any]) -> None:
             await queue.put(envelope)
@@ -938,19 +948,19 @@ class UdsServer:
                     dynamic_title = f"{subject_title} ({elapsed_seconds:.1f}s, {estimated_tokens} tokens)"
 
                     coerced = coerce_block_to_ui("thought", {"title": dynamic_title, "text": current_accumulation}, block_id=block_id)
-                    writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                    send_payload(coerced, envelope)
                     await writer.drain()
 
                 elif event_type == EventType.TELEMETRY_CONTENT:
                     text = payload.text
                     coerced = coerce_block_to_ui("model", {"text": text}, block_id=payload.block_id)
-                    writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                    send_payload(coerced, envelope)
                     await writer.drain()
 
                 elif event_type == EventType.TELEMETRY_USER:
                     text = payload.text
                     coerced = coerce_block_to_ui("user", {"text": text}, block_id=payload.block_id)
-                    writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                    send_payload(coerced, envelope)
                     await writer.drain()
 
                 elif event_type == EventType.TOOL_CONFIRMATION_REQUEST:
@@ -961,7 +971,7 @@ class UdsServer:
                     tc_args = tc.args
 
                     coerced = coerce_block_to_ui("confirmation", {"name": tc_name, "args": tc_args}, block_id=block_id)
-                    writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                    send_payload(coerced, envelope)
                     await writer.drain()
 
                 elif event_type == EventType.TELEMETRY_ACTIVITY:
@@ -971,50 +981,44 @@ class UdsServer:
 
                     if activity_type == TelemetryActivityType.TURN_START:
                         coerced = coerce_block_to_ui("thinking", {"text": ""}, block_id=act_block_id)
-                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                        send_payload(coerced, envelope)
                         await writer.drain()
 
                     elif activity_type == TelemetryActivityType.RECOVERY:
                         coerced = coerce_block_to_ui("warning", {"title": "⚠️ Execution Limit Exceeded (Recovery)", "text": payload.msg or ""}, block_id=act_block_id)
-                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                        send_payload(coerced, envelope)
                         await writer.drain()
 
                     elif activity_type == TelemetryActivityType.STEERING_INJECTED:
                         coerced = coerce_block_to_ui("steering", {"text": payload.msg or ""}, block_id=act_block_id)
-                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                        send_payload(coerced, envelope)
                         await writer.drain()
 
                     elif activity_type == TelemetryActivityType.STEERING_QUEUED:
                         coerced = coerce_block_to_ui("steering_queued", {"text": payload.msg or ""}, block_id=act_block_id)
-                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                        send_payload(coerced, envelope)
                         await writer.drain()
 
                     elif activity_type in (
                         TelemetryActivityType.STOP,
                         TelemetryActivityType.END,
                     ):
-                        response_text = getattr(payload, "response", None)
-                        if activity_type == TelemetryActivityType.END and response_text:
-                            coerced = coerce_block_to_ui("model", {"text": str(response_text)}, block_id=act_block_id)
-                            writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
-                            await writer.drain()
-
                         coerced = coerce_block_to_ui("idle", {"text": ""}, block_id=act_block_id)
-                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                        send_payload(coerced, envelope)
                         await writer.drain()
 
                     elif activity_type == TelemetryActivityType.TOOL_CALL_START:
                         name = payload.name or ""
                         args = payload.args or {}
                         coerced = coerce_block_to_ui("function_call", {"name": name, "args": args}, block_id=act_block_id)
-                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                        send_payload(coerced, envelope)
                         await writer.drain()
 
                     elif activity_type == TelemetryActivityType.TOOL_CALL_END:
                         name = payload.name or ""
                         resp = payload.response
                         coerced = coerce_block_to_ui("function_response", {"name": name, "response": resp}, block_id=act_block_id)
-                        writer.write(json.dumps({"session_id": str(session_id), **coerced}).encode("utf-8") + b"\n")
+                        send_payload(coerced, envelope)
                         await writer.drain()
 
         except asyncio.CancelledError:

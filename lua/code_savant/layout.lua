@@ -290,13 +290,20 @@ function Layout.setup_split_interception()
     group = split_group,
     callback = function()
       if Layout._spawning_layout then return end
+      local new_win = vim.api.nvim_get_current_win()
+      if vim.api.nvim_win_is_valid(new_win) then
+        local config = vim.api.nvim_win_get_config(new_win)
+        if config and config.relative and config.relative ~= "" then
+          return -- Ignore floating windows (e.g. Swarm HUD) completely!
+        end
+      end
 
       vim.schedule(function()
         if Layout._spawning_layout then return end
-        local new_win = vim.api.nvim_get_current_win()
-        if not vim.api.nvim_win_is_valid(new_win) then return end
+        local target_win = vim.api.nvim_get_current_win()
+        if not vim.api.nvim_win_is_valid(target_win) then return end
         
-        local cur_buf = vim.api.nvim_win_get_buf(new_win)
+        local cur_buf = vim.api.nvim_win_get_buf(target_win)
         local ft = vim.bo[cur_buf].filetype
         
         if ft == "code_savant_chat" or ft == "code_savant_input" then
@@ -306,7 +313,7 @@ function Layout.setup_split_interception()
           if not parent_win or not vim.api.nvim_win_is_valid(parent_win) then return end
 
           -- Detect the exact split kind (vsplit vs split) geometrically
-          local pos_new = vim.api.nvim_win_get_position(new_win)
+          local pos_new = vim.api.nvim_win_get_position(target_win)
           local pos_parent = vim.api.nvim_win_get_position(parent_win)
           
           local split_cmd = "vsplit"
@@ -315,7 +322,7 @@ function Layout.setup_split_interception()
           end
 
           -- Close the invalid division inside the sidebar instantly
-          pcall(vim.api.nvim_win_close, new_win, true)
+          pcall(vim.api.nvim_win_close, target_win, true)
 
           -- Locate last active standard editing split
           local code_win = nil

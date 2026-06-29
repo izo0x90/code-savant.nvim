@@ -81,6 +81,8 @@ local DEFAULT_CONFIG = {
     decline = { key = "d", desc = "Decline tool confirmation" },
     toggle_render = { key = "<leader>sr", desc = "Toggle render-markdown" },
     balance = { key = "<leader>sb", desc = "Balance layout splits" },
+    toggle_hud = { key = "<leader>sh", desc = "Toggle Sticky Swarm HUD" },
+    agents = { key = "<leader>sw", desc = "Browse Active Swarm Agents" },
 
     -- Text Objects (Operator-Pending & Visual)
     inner_message = { key = "im", desc = "Inner message" },
@@ -399,6 +401,75 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
         return
       end
 
+      local conn = Network.get_connection(bufnr)
+      local parent_id = conn and conn.session_id or ""
+
+      -- A. Process and cache subagent details if this frame belongs to a background subagent
+      if parsed.session_id and parent_id ~= "" and parsed.session_id ~= parent_id then
+        if not UI.sessions[parsed.session_id] then
+          UI.sessions[parsed.session_id] = {
+            session_id = parsed.session_id,
+            parent_id = parsed.parent_session_id,
+            agent_name = parsed.agent_name,
+            status = "thinking",
+            bufnr = nil,
+            last_update = "",
+            history = {},
+          }
+        end
+
+        local sub_node = UI.sessions[parsed.session_id]
+        if parsed.type == "thinking" or parsed.type == "idle" or parsed.type == "cancel" then
+          sub_node.status = parsed.type
+        end
+        if parsed.title and parsed.title ~= "vim.NIL" then
+          sub_node.last_update = parsed.title
+        elseif parsed.full_content and parsed.full_content ~= "" then
+          sub_node.last_update = parsed.full_content
+        end
+
+        -- Cache the raw frame so it can be flushed if mounted!
+        table.insert(sub_node.history, parsed)
+
+        -- Update the parent's Sticky HUD!
+        vim.schedule(function()
+          UI:update_sticky_hud(bufnr)
+        end)
+        return
+      end
+
+      -- B. Track parent session status
+      if parsed.session_id and conn and conn.session_id == parsed.session_id then
+        if not UI.sessions[parsed.session_id] then
+          UI.sessions[parsed.session_id] = {
+            session_id = parsed.session_id,
+            parent_id = parsed.parent_session_id,
+            agent_name = parsed.agent_name,
+            status = "idle",
+            bufnr = bufnr,
+            last_update = "",
+            history = {},
+          }
+        end
+        local node = UI.sessions[parsed.session_id]
+        if parsed.type == "thinking" or parsed.type == "idle" or parsed.type == "cancel" then
+          node.status = parsed.type
+        end
+
+        -- Dynamically stamp metadata and rename buffer upon receiving the first server-authenticated telemetry
+        if not vim.b[bufnr].agent_name then
+          vim.b[bufnr].session_id = parsed.session_id
+          vim.b[bufnr].parent_id = parsed.parent_session_id
+          vim.b[bufnr].agent_name = parsed.agent_name
+
+          local title = string.format("CodeSavant: %s (%s)", 
+            parsed.agent_name or "main", 
+            parsed.session_id:sub(1, 8)
+          )
+          pcall(vim.api.nvim_buf_set_name, bufnr, title)
+        end
+      end
+
       vim.schedule(function()
         if not vim.api.nvim_buf_is_valid(bufnr) then
           return
@@ -479,6 +550,20 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
   end)
 end
 
+--- Opens and mounts any session (main or subagent) purely driven by server telemetry
+--- @param session_id? string Optional session ID to load instead of starting a new one
+--- @param mock_mode? boolean Optional mock mode flag
+function M.open_session(session_id, mock_mode)
+  local result = M.create_chat_buffer()
+  local bufnr = result.bufnr
+
+  if session_id then
+    vim.b[bufnr].session_id = session_id
+  end
+
+  M.start_chat_session(bufnr, mock_mode or false, session_id)
+end
+
 --- Sets buffer on a window while temporarily disabling winfixbuf.
 --- @param winid integer
 --- @param bufnr integer
@@ -527,7 +612,6 @@ end
 
 local function handle_cancel(bufnr)
   local history_bufnr = vim.b[bufnr].partner_buf or bufnr
-  UI:render_message(history_bufnr, "cancel")
   local conn = Network.get_connection(history_bufnr)
   if conn and conn.pipe and not conn.pipe:is_closing() then
     local ok, err = pcall(Network.send_request, conn, "session/cancel", { session_id = conn.session_id })
@@ -677,6 +761,18 @@ local function apply_buffer_config(history_bufnr, input_bufnr)
   if keymaps.balance then
     vim.keymap.set("n", keymaps.balance.key, function() M.restore_layout_balance() end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.balance.desc })
     vim.keymap.set("n", keymaps.balance.key, function() M.restore_layout_balance() end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.balance.desc })
+  end
+
+  -- Bind manual Sticky Swarm HUD toggling if configured
+  if keymaps.toggle_hud then
+    vim.keymap.set("n", keymaps.toggle_hud.key, function() vim.cmd("CodeSavantToggleHUD") end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.toggle_hud.desc })
+    vim.keymap.set("n", keymaps.toggle_hud.key, function() vim.cmd("CodeSavantToggleHUD") end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.toggle_hud.desc })
+  end
+
+  -- Bind manual Swarm Agents browser if configured
+  if keymaps.agents then
+    vim.keymap.set("n", keymaps.agents.key, function() vim.cmd("CodeSavantAgents") end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.agents.desc })
+    vim.keymap.set("n", keymaps.agents.key, function() vim.cmd("CodeSavantAgents") end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.agents.desc })
   end
 
   -- Bind FIFO approvals inside both Input and History buffers
@@ -1102,9 +1198,7 @@ function M.load_session_picker()
           return
         end
 
-        local result = M.create_chat_buffer()
-        -- Load connection and stream session history in the active split window
-        M.start_chat_session(result.bufnr, selected.metadata.mock_mode or false, selected.session_id)
+        M.open_session(selected.session_id, selected.metadata.mock_mode or false)
       end
 
       local has_telescope, telescope = pcall(require, "telescope")
@@ -1213,9 +1307,7 @@ function M.setup(opts)
       end
     end
 
-    local result = M.create_chat_buffer()
-    -- Start connection and stream sessions in the active split window
-    M.start_chat_session(result.bufnr, mock_mode)
+    M.open_session(nil, mock_mode)
   end, {
     nargs = "?",
     complete = function()
@@ -1246,6 +1338,23 @@ function M.setup(opts)
 
   vim.api.nvim_create_user_command("CodeSavantApprovals", function()
     require("code_savant.navigation").browse_approvals()
+  end, { force = true })
+
+  vim.api.nvim_create_user_command("CodeSavantAgents", function()
+    require("code_savant.navigation").browse_active_agents()
+  end, { force = true })
+
+  vim.api.nvim_create_user_command("CodeSavantToggleHUD", function()
+    local bufnr = vim.api.nvim_get_current_buf()
+    if vim.bo[bufnr].filetype == "code_savant_input" then
+      bufnr = vim.b[bufnr].partner_buf or bufnr
+    end
+    local UI_inst = require("code_savant.ui").get_instance()
+    if UI_inst.active_huds[bufnr] then
+      UI_inst:close_sticky_hud(bufnr)
+    else
+      UI_inst:update_sticky_hud(bufnr)
+    end
   end, { force = true })
 
   -- Initialize layout engine and register split interception

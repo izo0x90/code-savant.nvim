@@ -3,7 +3,7 @@ import uuid
 import sys
 import traceback
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple, Union
-from engine.types import EventEnvelope
+from engine.types import Event, EventEnvelope
 
 # Type alias for asynchronous event listeners
 AsyncListener = Callable[[EventEnvelope[Any]], Coroutine[Any, Any, None]]
@@ -15,42 +15,31 @@ class MessageBus:
     Strictly type-safe: operates exclusively on strongly-typed EventEnvelope instances.
     """
 
-    def __init__(self, name: str = "main", parent: Optional["MessageBus"] = None):
+    def __init__(self, name: str = "main", parent: Optional["MessageBus"] = None, session_id: Optional[uuid.UUID] = None):
         self.name: str = name
         self.parent: Optional[MessageBus] = parent
+        self.session_id: Optional[uuid.UUID] = session_id
+        self.parent_session_id: Optional[uuid.UUID] = parent.session_id if parent else None
+        self.agent_name: Optional[str] = None
         self.listeners: Dict[str, List[AsyncListener]] = {}
         # Futures strictly expect and return EventEnvelope objects
         self._pending_futures: Dict[str, Tuple[asyncio.Future[EventEnvelope[Any]], str]] = {}
         self._subscriptions: Dict[str, Tuple[str, AsyncListener]] = {}
+        self._children: List["MessageBus"] = []
+        if parent:
+            parent._children.append(self)
 
-    def derive(self, subagent_name: str) -> "MessageBus":
+    def derive(self, subagent_name: str, child_session_id: Optional[uuid.UUID] = None) -> "MessageBus":
         """
         Derives a nested subagent message bus.
-        Binds publish actions back to the parent using pure EventEnvelopes.
         """
         if not isinstance(subagent_name, str) or not subagent_name:
             raise ValueError("subagent_name must be a non-empty string")
 
-        child_bus = MessageBus(name=f"{self.name}/{subagent_name}", parent=self)
-
-        async def subagent_publish(envelope: EventEnvelope[Any]) -> None:
-            if not isinstance(envelope, EventEnvelope):
-                raise TypeError("subagent_publish strictly requires an EventEnvelope instance.")
-
-            # Set sender cleanly to child_bus.name using pure explicit class reconstruction
-            delegated_envelope = EventEnvelope(
-                event_type=envelope.event_type,
-                payload=envelope.payload,
-                sender=child_bus.name,
-                correlation_id=envelope.correlation_id,
-                timestamp=envelope.timestamp
-            )
-            await self.publish(delegated_envelope)
-
-        child_bus.publish = subagent_publish
-        child_bus.subscribe = self.subscribe
-        child_bus.unsubscribe = self.unsubscribe
-        child_bus.request = self.request
+        resolved_id = child_session_id or uuid.uuid7()
+        child_bus = MessageBus(name=f"{self.name}/{subagent_name}", parent=self, session_id=resolved_id)
+        child_bus.agent_name = subagent_name
+        child_bus.parent_session_id = self.session_id
         return child_bus
 
     def subscribe(self, event_type: str, listener: AsyncListener) -> Dict[str, str]:
@@ -95,25 +84,51 @@ class MessageBus:
                 for k in to_remove:
                     self._subscriptions.pop(k, None)
 
-    async def publish(self, envelope: EventEnvelope[Any]) -> None:
-        """
-        Dispatches a typed EventEnvelope concurrently to all listeners.
-        """
-        if not isinstance(envelope, EventEnvelope):
-            raise TypeError("MessageBus.publish strictly requires an EventEnvelope instance.")
-
-        event_type_str = envelope.event_type.value
-        correlation_id = envelope.correlation_id
-
-        # Match outstanding request futures purely using typed fields
-        if correlation_id and correlation_id in self._pending_futures:
+    def _resolve_future(self, correlation_id: str, event_type_str: str, envelope: EventEnvelope[Any]) -> bool:
+        """Finds and resolves a pending future in this bus or any of its children."""
+        if correlation_id in self._pending_futures:
             future, expected_response_type = self._pending_futures[correlation_id]
             if event_type_str == expected_response_type:
                 if not future.done():
-                    # Request strictly returns the strongly-typed EventEnvelope!
                     future.set_result(envelope)
+                    return True
+        for child in self._children:
+            if child._resolve_future(correlation_id, event_type_str, envelope):
+                return True
+        return False
 
-        # Notify listeners with the typed EventEnvelope
+    async def publish(self, event: Event[Any]) -> None:
+        """
+        Public API: Strictly takes a raw Event. Stamps it cleanly and triggers dispatch.
+        """
+        if not isinstance(event, Event):
+            raise TypeError("MessageBus.publish strictly requires an Event instance.")
+
+        envelope = EventEnvelope(
+            event_type=event.event_type,
+            payload=event.payload,
+            sender=self.name,
+            correlation_id=event.correlation_id,
+            session_id=self.session_id,
+            parent_session_id=self.parent_session_id,
+            agent_name=self.agent_name or self.name,
+        )
+        await self._dispatch(envelope)
+
+    async def _dispatch(self, envelope: EventEnvelope[Any]) -> None:
+        """
+        Internal: Propagates a fully-stamped EventEnvelope up the hierarchy.
+        """
+        event_type_str = envelope.event_type.value
+
+        # Match outstanding request futures purely using typed fields (recursive traversal)
+        if envelope.correlation_id:
+            root = self
+            while root.parent:
+                root = root.parent
+            root._resolve_future(envelope.correlation_id, event_type_str, envelope)
+
+        # Notify local listeners with the typed EventEnvelope
         if event_type_str in self.listeners:
             # Execute all async handlers concurrently in the background
             tasks = []
@@ -132,31 +147,35 @@ class MessageBus:
                         print("[MessageBus Error] Subscriber exception caught during publish:", file=sys.stderr)
                         traceback.print_exception(type(r), r, r.__traceback__, file=sys.stderr)
 
+        # Bubble up to parent without re-stamping or modification
+        if self.parent:
+            await self.parent._dispatch(envelope)
+
     async def request(
         self,
-        request_envelope: EventEnvelope[Any],
+        request_event: Event[Any],
         response_type: str,
         timeout_sec: float
     ) -> EventEnvelope[Any]:
         """
-        Asynchronous Request-Response pattern using typed envelopes.
-        Requires the request_envelope to have an explicit correlation_id on entry.
+        Asynchronous Request-Response pattern using typed Events.
+        Requires the request_event to have an explicit correlation_id on entry.
         """
-        if not isinstance(request_envelope, EventEnvelope):
-            raise TypeError("MessageBus.request strictly requires an EventEnvelope instance.")
+        if not isinstance(request_event, Event):
+            raise TypeError("MessageBus.request strictly requires an Event instance.")
         if not isinstance(response_type, str) or not response_type:
             raise ValueError("response_type must be a non-empty string")
 
-        correlation_id = request_envelope.correlation_id
+        correlation_id = request_event.correlation_id
         if not correlation_id:
-            raise ValueError("MessageBus.request: request_envelope must have a valid correlation_id.")
+            raise ValueError("MessageBus.request: request_event must have a valid correlation_id.")
 
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         self._pending_futures[correlation_id] = (future, response_type)
 
         try:
-            await self.publish(request_envelope)
+            await self.publish(request_event)
             return await asyncio.wait_for(future, timeout=timeout_sec)
         finally:
             self._pending_futures.pop(correlation_id, None)

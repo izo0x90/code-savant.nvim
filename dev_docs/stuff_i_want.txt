@@ -27,6 +27,12 @@ Features
     - Classic gemini cli mode
     - Issue solver "smart grep mode"
 
+- Sub agents
+  - Make fully async and swam-able
+  - Take action in telescope swarm view, cancel etc
+  - Have the main agent be able to manage sub agents
+  - 
+
 ----------------------------------------------------------------------------------------------------
 General workflow/ Mitigation techniques
 ----------------------------------------------------------------------------------------------------

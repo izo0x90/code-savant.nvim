@@ -229,4 +229,68 @@ function Navigation.browse_approvals()
   }):find()
 end
 
+function Navigation.browse_active_agents()
+  local cs = require("code_savant")
+  local UI = require("code_savant.ui").get_instance()
+
+  if not cs._has_telescope or not cs._telescope_api then
+    vim.notify("[CodeSavant Error] Telescope is required to browse active agents. Please install telescope.nvim.", vim.log.levels.ERROR)
+    return
+  end
+
+  local list = {}
+  for session_id, s in pairs(UI.sessions) do
+    if s.parent_id then
+      table.insert(list, {
+        session_id = session_id,
+        agent_name = s.agent_name,
+        status = s.status,
+        last_update = s.last_update,
+      })
+    end
+  end
+
+  if #list == 0 then
+    vim.notify("[CodeSavant] No active swarm background subagents running.", vim.log.levels.INFO)
+    return
+  end
+
+  local pickers = require("telescope.pickers")
+  local finders = require("telescope.finders")
+  local conf = require("telescope.config").values
+  local actions = require("telescope.actions")
+  local action_state = require("telescope.actions.state")
+
+  pickers.new({}, {
+    prompt_title = "Active Swarm Subagents Browser",
+     finder = finders.new_table({
+      results = list,
+      entry_maker = function(entry)
+        local status_sym = (entry.status == "thinking") and "󰒋 [RUNNING]" or "󰄬 [IDLE]"
+        local label = string.format("%s - %s (Session: %s)", status_sym, entry.agent_name, entry.session_id:sub(1, 8))
+        return {
+          value = entry,
+          display = label,
+          ordinal = entry.agent_name .. " " .. entry.status,
+        }
+      end,
+    }),
+    sorter = conf.generic_sorter({}),
+    attach_mappings = function(prompt_bufnr, map)
+      actions.select_default:replace(function()
+        actions.close(prompt_bufnr)
+        local entry = action_state.get_selected_entry()
+        if not entry then return end
+        local val = entry.value
+
+        -- Mount the subagent's session in a new buffer and switch to it!
+        vim.schedule(function()
+          cs.open_session(val.session_id)
+        end)
+      end)
+      return true
+    end,
+  }):find()
+end
+
 return Navigation

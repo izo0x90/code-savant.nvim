@@ -61,7 +61,7 @@ class AgentTool(BaseTool):
         from engine.executor import LocalAgentExecutor
         
         # Derive Child Message Bus (Hierarchical prefixing)
-        child_bus = context.message_bus.derive(args.agent_name)
+        child_bus = context.message_bus.derive(args.agent_name, child_session.session_id)
         
         # Formulate and validate child executor config using strict Pydantic model
         config = ExecutorAgentConfig(

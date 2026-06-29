@@ -29,6 +29,7 @@ from engine.types import (
     MessageRole,
     LoopStatus,
     TerminationReason,
+    Event,
     EventEnvelope,
     EventType,
     TelemetryActivityType,
@@ -85,7 +86,7 @@ class AsyncToolScheduler:
             block_id = uuid.uuid7()
 
             await self.bus.publish(
-                EventEnvelope(
+                Event(
                     event_type=EventType.TELEMETRY_ACTIVITY,
                     payload=TelemetryActivityPayload(
                         activity_type=TelemetryActivityType.TOOL_CALL_START,
@@ -95,7 +96,6 @@ class AsyncToolScheduler:
                         prompt_id=prompt_id,
                         block_id=block_id,
                     ),
-                    sender=self.bus.name,
                 )
             )
 
@@ -135,7 +135,7 @@ class AsyncToolScheduler:
                     resp = {"error": f"Unhandled tool exception: {err_msg}"}
 
             await self.bus.publish(
-                EventEnvelope(
+                Event(
                     event_type=EventType.TELEMETRY_ACTIVITY,
                     payload=TelemetryActivityPayload(
                         activity_type=TelemetryActivityType.TOOL_CALL_END,
@@ -145,7 +145,6 @@ class AsyncToolScheduler:
                         prompt_id=prompt_id,
                         block_id=block_id,
                     ),
-                    sender=self.bus.name,
                 )
             )
 
@@ -190,14 +189,13 @@ class LocalAgentExecutor:
         steering_msg_id = uuid.uuid7()
         self.pending_hints_queue.append((steering_msg_id, message))
         await context.message_bus.publish(
-            EventEnvelope(
+            Event(
                 event_type=EventType.TELEMETRY_ACTIVITY,
                 payload=TelemetryActivityPayload(
                     activity_type=TelemetryActivityType.STEERING_QUEUED,
                     msg=message,
                     block_id=steering_msg_id,
                 ),
-                sender=context.message_bus.name,
             )
         )
 
@@ -250,7 +248,7 @@ class LocalAgentExecutor:
         self.last_model_message_id = model_message_id
 
         await context.message_bus.publish(
-            EventEnvelope(
+            Event(
                 event_type=EventType.TELEMETRY_ACTIVITY,
                 payload=TelemetryActivityPayload(
                     activity_type=TelemetryActivityType.TURN_START,
@@ -258,7 +256,6 @@ class LocalAgentExecutor:
                     prompt_id=prompt_id,
                     block_id=model_message_id,
                 ),
-                sender=context.message_bus.name,
             )
         )
 
@@ -274,7 +271,7 @@ class LocalAgentExecutor:
         async for chunk in self.call_model_async(turn_counter, context):
             if isinstance(chunk, ThoughtChunk):
                 await context.message_bus.publish(
-                    EventEnvelope(
+                    Event(
                         event_type=EventType.TELEMETRY_THOUGHT,
                         payload=TelemetryThoughtPayload(
                             text=chunk.text,
@@ -282,21 +279,19 @@ class LocalAgentExecutor:
                             prompt_id=prompt_id,
                             title=chunk.title,
                         ),
-                        sender=context.message_bus.name,
                     )
                 )
                 parts.append(chunk)
             elif isinstance(chunk, ContentChunk):
                 self.has_streamed_content = True
                 await context.message_bus.publish(
-                    EventEnvelope(
+                    Event(
                         event_type=EventType.TELEMETRY_CONTENT,
                         payload=TelemetryContentPayload(
                             text=chunk.text,
                             block_id=model_message_id,
                             prompt_id=prompt_id,
                         ),
-                        sender=context.message_bus.name,
                     )
                 )
                 parts.append(TextPart(text=chunk.text))
@@ -327,7 +322,7 @@ class LocalAgentExecutor:
         if not function_calls:
             final_text = "".join([p.text for p in parts if isinstance(p, TextPart)])
             await context.message_bus.publish(
-                EventEnvelope(
+                Event(
                     event_type=EventType.TELEMETRY_ACTIVITY,
                     payload=TelemetryActivityPayload(
                         activity_type=TelemetryActivityType.STOP,
@@ -335,7 +330,6 @@ class LocalAgentExecutor:
                         prompt_id=prompt_id,
                         block_id=model_message_id,
                     ),
-                    sender=context.message_bus.name,
                 )
             )
             return TurnOutcome(
@@ -393,6 +387,26 @@ class LocalAgentExecutor:
         await context.session_manager.save_session(context.session)
 
         if outcome.task_completed:
+            final_msg_id = uuid.uuid7()
+            final_msg = ChatMessage(
+                id=final_msg_id,
+                role=MessageRole.MODEL.value,
+                parts=[TextPart(text=outcome.submitted_output)]
+            )
+            await context.session.append_message(final_msg)
+            await context.session_manager.save_session(context.session)
+
+            await context.message_bus.publish(
+                Event(
+                    event_type=EventType.TELEMETRY_CONTENT,
+                    payload=TelemetryContentPayload(
+                        text=outcome.submitted_output,
+                        block_id=final_msg_id,
+                        prompt_id=prompt_id,
+                    )
+                )
+            )
+
             return TurnOutcome(
                 status=LoopStatus.STATUS_STOP.value,
                 terminate_reason=TerminationReason.REASON_GOAL.value,
@@ -418,14 +432,13 @@ class LocalAgentExecutor:
         """Implements final grace warning fallback turn with genuine model inference."""
         prompt_id = f"agent-{self.definition.name}#{turn_counter}"
         await context.message_bus.publish(
-            EventEnvelope(
+            Event(
                 event_type=EventType.TELEMETRY_ACTIVITY,
                 payload=TelemetryActivityPayload(
                     activity_type=TelemetryActivityType.RECOVERY,
                     msg=f"Execution bounds exceeded due to {reason}. Granting final recovery turn...",
                     prompt_id=prompt_id,
                 ),
-                sender=context.message_bus.name,
             )
         )
 
@@ -454,14 +467,13 @@ class LocalAgentExecutor:
                 return turn_result.final_result
         except Exception as e:
             await context.message_bus.publish(
-                EventEnvelope(
+                Event(
                     event_type=EventType.TELEMETRY_ACTIVITY,
                     payload=TelemetryActivityPayload(
                         activity_type=TelemetryActivityType.RECOVERY_FAILED,
                         msg=f"Recovery turn aborted due to error: {e}",
                         prompt_id=prompt_id,
                     ),
-                    sender=context.message_bus.name,
                 )
             )
         finally:
@@ -516,14 +528,13 @@ class LocalAgentExecutor:
                 query_text_val = part.text
 
         await context.message_bus.publish(
-            EventEnvelope(
+            Event(
                 event_type=EventType.TELEMETRY_USER,
                 payload=TelemetryContentPayload(
                     text=query_text_val,
                     block_id=current_message.id,
                     prompt_id=f"agent-{self.definition.name}#0",
                 ),
-                sender=context.message_bus.name,
             )
         )
 
@@ -547,7 +558,7 @@ class LocalAgentExecutor:
 
         prompt_id = f"agent-{self.definition.name}#{turn_counter}"
         await context.message_bus.publish(
-            EventEnvelope(
+            Event(
                 event_type=EventType.TELEMETRY_ACTIVITY,
                 payload=TelemetryActivityPayload(
                     activity_type=TelemetryActivityType.START,
@@ -556,7 +567,6 @@ class LocalAgentExecutor:
                     query=query_text,
                     prompt_id=prompt_id,
                 ),
-                sender=context.message_bus.name,
             )
         )
 
@@ -607,7 +617,7 @@ class LocalAgentExecutor:
                     self.pending_hints_queue.clear()
 
                     await context.message_bus.publish(
-                        EventEnvelope(
+                        Event(
                             event_type=EventType.TELEMETRY_ACTIVITY,
                             payload=TelemetryActivityPayload(
                                 activity_type=TelemetryActivityType.STEERING_INJECTED,
@@ -615,7 +625,6 @@ class LocalAgentExecutor:
                                 prompt_id=f"agent-{self.definition.name}#{turn_counter - 1}",
                                 block_id=last_steer_id,
                             ),
-                            sender=context.message_bus.name,
                         )
                     )
                     steering_prompt = self.context_strategy.compile_steering_prompt(
@@ -630,14 +639,13 @@ class LocalAgentExecutor:
 
                     # Publish committed user prompt telemetry
                     await context.message_bus.publish(
-                        EventEnvelope(
+                        Event(
                             event_type=EventType.TELEMETRY_USER,
                             payload=TelemetryContentPayload(
                                 text=hints,
                                 block_id=steer_msg.id,
                                 prompt_id=f"agent-{self.definition.name}#{turn_counter - 1}",
                             ),
-                            sender=context.message_bus.name,
                         )
                     )
                     current_message = steer_msg
@@ -659,16 +667,14 @@ class LocalAgentExecutor:
                 final_result = f"Failed to complete: terminated with {terminate_reason}"
 
         await context.message_bus.publish(
-            EventEnvelope(
+            Event(
                 event_type=EventType.TELEMETRY_ACTIVITY,
                 payload=TelemetryActivityPayload(
                     activity_type=TelemetryActivityType.END,
                     msg=f"Asynchronous loop execution finished: {terminate_reason}",
-                    response=final_result if not getattr(self, "has_streamed_content", False) else None,
                     prompt_id=f"agent-{self.definition.name}#{turn_counter - 1}",
                     block_id=self.last_model_message_id,
                 ),
-                sender=context.message_bus.name,
             )
         )
 

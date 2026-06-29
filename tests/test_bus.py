@@ -4,6 +4,7 @@ import pytest
 from typing import Any
 from engine.bus import MessageBus
 from engine.types import (
+    Event,
     EventEnvelope,
     EventType,
     ToolConfirmationRequestPayload,
@@ -22,21 +23,20 @@ async def test_message_bus_publish_subscribe() -> None:
 
     bus.subscribe(EventType.TELEMETRY_THOUGHT.value, listener)
 
-    # Publish on the bus using EventEnvelope (pure design)
-    envelope = EventEnvelope(
+    # Publish on the bus using Event (pure design)
+    event = Event(
         event_type=EventType.TELEMETRY_THOUGHT,
         payload=TelemetryThoughtPayload(
             text="Hello world!",
             block_id=uuid.uuid7(),
             prompt_id="test-prompt-id"
-        ),
-        sender="test_sender"
+        )
     )
-    await bus.publish(envelope)
+    await bus.publish(event)
 
     assert len(received_events) == 1
     assert received_events[0].payload.text == "Hello world!"
-    assert received_events[0].sender == "test_sender"
+    assert received_events[0].sender == "main"
 
 
 @pytest.mark.asyncio
@@ -54,14 +54,13 @@ async def test_message_bus_subscriber_error_handling() -> None:
     bus.subscribe(EventType.TELEMETRY_THOUGHT.value, healthy_listener)
 
     # Publish should not raise exception but print it to stderr
-    await bus.publish(EventEnvelope(
+    await bus.publish(Event(
         event_type=EventType.TELEMETRY_THOUGHT,
         payload=TelemetryThoughtPayload(
             text="crash-test",
             block_id=uuid.uuid7(),
             prompt_id="test-prompt-id"
-        ),
-        sender="test_sender"
+        )
     ))
 
     # Check that healthy subscriber still executed successfully
@@ -77,24 +76,22 @@ async def test_message_bus_request_response() -> None:
         correlation_id = envelope.correlation_id
         if correlation_id:
             # Send back the response with matching correlation ID
-            await bus.publish(EventEnvelope(
+            await bus.publish(Event(
                 event_type=EventType.TOOL_CONFIRMATION_RESPONSE,
                 payload=ToolConfirmationResponsePayload(confirmed=True),
-                sender="replier",
                 correlation_id=correlation_id
             ))
 
     bus.subscribe(EventType.TOOL_CONFIRMATION_REQUEST.value, replier)
 
-    # Instantiate a pure, explicit request envelope
-    request_env = EventEnvelope(
+    # Instantiate a pure, explicit request Event
+    request_env = Event(
         event_type=EventType.TOOL_CONFIRMATION_REQUEST,
         payload=ToolConfirmationRequestPayload(
             tool_call=ToolCallSpec(id="1", name="foo", args={}),
             block_id=uuid.uuid7(),
             prompt_id="test-prompt-id"
         ),
-        sender="test_caller",
         correlation_id="test-correlation-id"
     )
 
@@ -115,14 +112,13 @@ async def test_message_bus_request_timeout() -> None:
     bus = MessageBus()
 
     # Request with no reply, should trigger TimeoutError
-    request_env = EventEnvelope(
+    request_env = Event(
         event_type=EventType.TOOL_CONFIRMATION_REQUEST,
         payload=ToolConfirmationRequestPayload(
             tool_call=ToolCallSpec(id="2", name="bar", args={}),
             block_id=uuid.uuid7(),
             prompt_id="test-prompt-id"
         ),
-        sender="test_caller",
         correlation_id="test-timeout-id"
     )
 
@@ -148,14 +144,13 @@ async def test_message_bus_derive_hierarchy() -> None:
     child_bus.subscribe(EventType.TELEMETRY_THOUGHT.value, parent_listener)
 
     # Publishing on the child bus delegates up to parent
-    await child_bus.publish(EventEnvelope(
+    await child_bus.publish(Event(
         event_type=EventType.TELEMETRY_THOUGHT,
         payload=TelemetryThoughtPayload(
             text="hello child",
             block_id=uuid.uuid7(),
             prompt_id="test-prompt-id"
-        ),
-        sender="child"
+        )
     ))
 
     assert len(received_parent_events) == 1
@@ -183,14 +178,13 @@ async def test_message_bus_input_validation() -> None:
     with pytest.raises(TypeError):
         await bus.request("not-envelope", EventType.TOOL_CONFIRMATION_RESPONSE.value, 1.0)  # type: ignore
 
-    request_env_no_id = EventEnvelope(
+    request_env_no_id = Event(
         event_type=EventType.TOOL_CONFIRMATION_REQUEST,
         payload=ToolConfirmationRequestPayload(
             tool_call=ToolCallSpec(id="4", name="baz", args={}),
             block_id=uuid.uuid7(),
             prompt_id="test-prompt-id"
-        ),
-        sender="test_caller"
+        )
     )
     with pytest.raises(ValueError):
         await bus.request(request_env_no_id, "", 1.0)

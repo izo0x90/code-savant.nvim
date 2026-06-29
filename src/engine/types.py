@@ -64,6 +64,9 @@ class SessionMetadataPayload(BaseModel):
     agent_name: Optional[str] = Field(
         default=None, description="The explicit subagent name (captured separately!)."
     )
+    parent_session_id: Optional[str] = Field(
+        default=None, description="The session ID of the parent agent."
+    )
 
 
 class SessionMetaSidecar(BaseModel):
@@ -424,6 +427,17 @@ class ToolConfirmationResponsePayload(BaseModel):
     confirmed: bool
 
 
+class Event(BaseModel, Generic[T]):
+    """
+    Lightweight, pure-data container published by components.
+    Does NOT contain transport, timestamp, sender, or routing metadata.
+    """
+    model_config = ConfigDict(frozen=True, slots=True)
+    event_type: EventType
+    payload: T
+    correlation_id: Optional[str] = None
+
+
 class EventEnvelope(BaseModel, Generic[T]):
     """
     Programmatic, typed generic container wrapping event payloads with metadata.
@@ -435,6 +449,9 @@ class EventEnvelope(BaseModel, Generic[T]):
     sender: str
     correlation_id: Optional[str] = None
     timestamp: float = Field(default_factory=time.time)
+    session_id: uuid.UUID
+    parent_session_id: Optional[uuid.UUID] = None
+    agent_name: str
 
 
 class JsonRpcNotification(BaseModel):

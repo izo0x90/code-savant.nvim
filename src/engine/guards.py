@@ -6,6 +6,7 @@ from pathlib import Path
 from engine.tools import BaseTool
 from engine.types import (
     ExecutionContext,
+    Event,
     EventEnvelope,
     EventType,
     TelemetryActivityType,
@@ -86,7 +87,7 @@ class UserConfirmationGuard(ToolExecutionGuard):
     async def before_execute(self, tool_name: str, args: Dict[str, Any], context: ExecutionContext) -> bool:
         # Pause execution and check user consent for destructive/structural tools
         if self.is_interactive and tool_name in ["write_file", "replace"]:
-            await context.message_bus.publish(EventEnvelope(
+            await context.message_bus.publish(Event(
                 event_type=EventType.TELEMETRY_ACTIVITY,
                 payload=TelemetryActivityPayload(
                     activity_type=TelemetryActivityType.AWAITING_APPROVAL,
@@ -94,12 +95,11 @@ class UserConfirmationGuard(ToolExecutionGuard):
                     tool=tool_name,
                     prompt_id=self.prompt_id,
                     block_id=self.block_id
-                ),
-                sender=context.message_bus.name
+                )
             ))
             self.timer.pause()
             
-            request_envelope = EventEnvelope(
+            request_event = Event(
                 event_type=EventType.TOOL_CONFIRMATION_REQUEST,
                 payload=ToolConfirmationRequestPayload(
                     tool_call=ToolCallSpec(
@@ -110,19 +110,18 @@ class UserConfirmationGuard(ToolExecutionGuard):
                     block_id=self.block_id,
                     prompt_id=self.prompt_id
                 ),
-                sender=context.message_bus.name,
                 correlation_id=str(self.block_id)
             )
             
             response_envelope = await context.message_bus.request(
-                request_envelope,
+                request_event,
                 EventType.TOOL_CONFIRMATION_RESPONSE.value,
                 self.timeout
             )
             self.timer.resume()
 
             if not response_envelope.payload.confirmed:
-                await context.message_bus.publish(EventEnvelope(
+                await context.message_bus.publish(Event(
                     event_type=EventType.TELEMETRY_ACTIVITY,
                     payload=TelemetryActivityPayload(
                         activity_type=TelemetryActivityType.APPROVAL_DENIED,
@@ -130,8 +129,7 @@ class UserConfirmationGuard(ToolExecutionGuard):
                         tool=tool_name,
                         prompt_id=self.prompt_id,
                         block_id=self.block_id
-                    ),
-                    sender=context.message_bus.name
+                    )
                 ))
                 raise PermissionError("Tool execution rejected by user confirmation safeguard.")
         return True
