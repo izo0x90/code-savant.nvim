@@ -18,7 +18,7 @@ class SubagentDefinition(BaseModel):
     system_prompt: str = Field(..., description="The base system prompt used for instructing this subagent.")
     systemPrompt: str = Field(..., description="Compatible/deprecated camelCase system prompt representation.")
     kind: str = Field(default="local", description="Whether the subagent is local or remote.")
-    tools: Optional[List[str]] = Field(default=None, description="List of tools this subagent is allowed to use. If None, inherits all.")
+    tools: Optional[List[str]] = Field(default_factory=list, description="List of tools this subagent is allowed to use. Must explicitly include '*' to inherit all parent tools. Defaults to empty.")
     mcp_servers: Optional[Dict[str, Any]] = Field(default=None, description="Inline custom subagent MCP configurations.")
     mcpServers: Optional[Dict[str, Any]] = Field(default=None, description="Compatible camelCase MCP configurations.")
     model: str = Field(default="inherit", description="Specific model configuration to use (e.g., 'inherit' or a model name).")

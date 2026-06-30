@@ -64,7 +64,7 @@ class SessionMetadataPayload(BaseModel):
     agent_name: Optional[str] = Field(
         default=None, description="The explicit subagent name (captured separately!)."
     )
-    parent_session_id: Optional[str] = Field(
+    parent_session_id: Optional[uuid.UUID] = Field(
         default=None, description="The session ID of the parent agent."
     )
 
@@ -390,6 +390,7 @@ class TelemetryContentPayload(BaseModel):
     text: str
     block_id: uuid.UUID
     prompt_id: str
+    is_streaming: bool = False
 
 
 class TelemetryActivityPayload(BaseModel):

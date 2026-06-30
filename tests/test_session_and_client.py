@@ -94,7 +94,10 @@ async def run_session_tests(tmp_dir: str):
     
     # 6a. Playback with State Modifiers
     playback_sess_id = uuid.uuid7()
-    playback_file = Path(tmp_dir) / f"{str(playback_sess_id)}{SESSION_FILE_SUFFIX}"
+    playback_dir = Path(tmp_dir) / str(playback_sess_id)
+    playback_dir.mkdir(parents=True, exist_ok=True)
+    
+    playback_file = playback_dir / f"{str(playback_sess_id)}{SESSION_FILE_SUFFIX}"
     playback_meta_file = Path(tmp_dir) / f"{str(playback_sess_id)}{SESSION_META_SUFFIX}"
     
     import json
@@ -133,7 +136,9 @@ async def run_session_tests(tmp_dir: str):
     
     # 6b. Loud Parse Failure
     corrupt_sess_id = uuid.uuid7()
-    corrupt_file = Path(tmp_dir) / f"{str(corrupt_sess_id)}{SESSION_FILE_SUFFIX}"
+    corrupt_dir = Path(tmp_dir) / str(corrupt_sess_id)
+    corrupt_dir.mkdir(parents=True, exist_ok=True)
+    corrupt_file = corrupt_dir / f"{str(corrupt_sess_id)}{SESSION_FILE_SUFFIX}"
     corrupt_lines = [
         json.dumps({"role": "user", "parts": [{"type": "text", "text": "Valid message"}]}),
         "{invalid-json-here}"
@@ -162,10 +167,6 @@ async def run_retention_tests(tmp_dir: str):
         tool_log_suffix=TOOL_LOG_FILE_SUFFIX
     )
     await manager.ensure_storage_dir()
-
-    # Clear out any residual session files in the directory
-    for f in await asyncio.to_thread(os.listdir, tmp_dir):
-        await asyncio.to_thread(os.remove, os.path.join(tmp_dir, f))
 
     ret_ids = [uuid.uuid7() for _ in range(5)]
     # Create 5 mock sessions
@@ -264,7 +265,7 @@ async def run_integration_tests(tmp_dir: str):
 
     # Setup isolated executor
     config = ExecutorAgentConfig.model_validate(agent_def)
-    bus = MessageBus()
+    bus = MessageBus(session_id=sess_id)
     context = ExecutionContext(
         workspace_path=Path(os.getcwd()),
         message_bus=bus,
@@ -311,10 +312,10 @@ async def main():
     os.makedirs(tmp_test_dir, exist_ok=True)
 
     try:
-        await run_session_tests(tmp_test_dir)
-        await run_retention_tests(tmp_test_dir)
+        await run_session_tests(os.path.join(tmp_test_dir, "session_runs"))
+        await run_retention_tests(os.path.join(tmp_test_dir, "retention_runs"))
         await run_client_mock_tests()
-        await run_integration_tests(tmp_test_dir)
+        await run_integration_tests(os.path.join(tmp_test_dir, "integration_runs"))
         print("\n🎉 ALL TESTS PASSED WITH 100% CORRECTNESS AND ASYNC INTEGRITY!")
     finally:
         # Clean up temporary test directories

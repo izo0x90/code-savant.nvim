@@ -1102,6 +1102,7 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
       session.active_stream_extmark_id = nil
       session.active_stream_height = nil
       session.active_stream_start_row = nil
+      session.active_stream_accumulator = nil
       -- Also clear global ones for safety
       self.active_stream_extmark_id = nil
       self.active_stream_height = nil
@@ -1112,7 +1113,7 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
 
   -- 4. Compile text block content
   local text_to_write = {}
-  local is_streaming = (vim.b[bufnr].status == "thinking" and msg_type == "model")
+  local is_streaming = (type(data) == "table" and data.is_streaming == true)
   local chunk_text = (type(data) == "table" and data.content) and data.content or data
 
   if is_streaming then
@@ -1159,14 +1160,18 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
       self:stop_spinner(bufnr, "thinking")
       
       -- Anchor the stream starting row segment exactly once on the first chunk
-      if thinking_row and not session.active_stream_start_row then
-        session.active_stream_start_row = thinking_row
+      if not session.active_stream_start_row then
+        if thinking_row then
+          session.active_stream_start_row = thinking_row + 1
+        else
+          session.active_stream_start_row = line_count
+        end
         session.active_stream_accumulator = { chunk_text } -- Reset accumulator with the first token
         log_debug("STREAM START ANCHOR SET: active_stream_start_row=%d, msg_id=%s", session.active_stream_start_row, tostring(msg_id))
       end
       
-      local target_row = session.active_stream_start_row or math.max(0, line_count - 1)
-      local replace_height = session.active_stream_height or (thinking_row and 1 or 0)
+      local target_row = session.active_stream_start_row
+      local replace_height = session.active_stream_height or 0
       
       log_debug("STREAM WRITE ATOM: msg_id=%s, thinking_row=%s, active_stream_start_row=%s, target_row=%d, replace_height=%d, active_stream_height=%s, lines=%d",
         tostring(msg_id), tostring(thinking_row), tostring(session.active_stream_start_row), target_row, replace_height, tostring(session.active_stream_height), #text_to_write)
@@ -1178,7 +1183,15 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
       if config.header then
         local stream_needs_separator = (target_row > 1)
         local virt_lines_spec = build_virt_lines(self, bufnr, config.header, config.header_hl, stream_needs_separator)
-        local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, target_row, 0, {
+        
+        -- Dynamically bypass concealed markdown code fences by anchoring to the second line if present
+        local header_row = target_row
+        local has_code_fence = (text_to_write[1] and text_to_write[1]:sub(1, 3) == "```")
+        if has_code_fence and #text_to_write > 1 then
+          header_row = target_row + 1
+        end
+
+        local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, header_row, 0, {
           id = session.active_stream_extmark_id, -- 🌟 Atomically moves/pins the existing extmark!
           virt_lines = virt_lines_spec,
           virt_lines_above = true,
@@ -1215,10 +1228,10 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
 
       if thinking_row then
         insert_start = thinking_row
-        header_row = thinking_row + 1
+        header_row = thinking_row
       else
         insert_start = is_empty_buffer and 1 or line_count
-        header_row = needs_separator and insert_start + 1 or insert_start
+        header_row = insert_start
       end
 
       log_debug("STATIC WRITE ATOM: msg_type=%s, is_empty_buffer=%s, thinking_row=%s, insert_start=%d, header_row=%d, lines=%d",
@@ -1233,7 +1246,20 @@ function UI:_render_standard_handler(bufnr, msg_type, data)
 
       if config.header then
         local virt_lines_spec = build_virt_lines(self, bufnr, config.header, config.header_hl, needs_separator)
-        local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, header_row, 0, {
+
+        -- Dynamically bypass concealed markdown code fences by anchoring to the second line of content if present
+        local first_content_row = header_row
+        if needs_separator then
+          first_content_row = header_row + 1
+        end
+
+        local actual_header_row = header_row
+        local has_code_fence = (text_to_write[1] and text_to_write[1]:sub(1, 3) == "```")
+        if has_code_fence and #text_to_write > 1 then
+          actual_header_row = first_content_row + 1
+        end
+
+        local extmark_id = self.api.nvim_buf_set_extmark(bufnr, self.namespace, actual_header_row, 0, {
           virt_lines = virt_lines_spec,
           virt_lines_above = true,
         })

@@ -4,3 +4,5 @@ systemPrompt: "You are an expert developer subagent. Your specialty is writing, 
 maxTurns: 4
 maxTimeSeconds: 20
 requires_approval: false
+tools:
+  - "*"

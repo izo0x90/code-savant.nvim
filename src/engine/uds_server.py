@@ -36,15 +36,25 @@ from engine.types import (
     JsonRpcErrorPayload,
 )
 
+from pydantic import BaseModel, ConfigDict
+
 # Centralized Logger for UDS Server
 logger = logging.getLogger("engine.uds_server")
+
+
+class SessionLoadParams(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    workspace_path: str
+    session_id: uuid.UUID
+    parent_session_id: Optional[uuid.UUID] = None
 
 
 def coerce_block_to_ui(
     part_type: str, 
     data: Dict[str, Any], 
     block_id: Optional[Any] = None, 
-    role: Optional[str] = None
+    role: Optional[str] = None,
+    is_streaming: bool = False
 ) -> Dict[str, Any]:
     """
     Unified Coercion Source of Truth.
@@ -95,8 +105,53 @@ def coerce_block_to_ui(
         "id": str(resolved_id),
         "type": part_type,
         "title": title,
-        "full_content": content
+        "full_content": content,
+        "is_streaming": is_streaming
     }
+
+
+def consolidate_msg_parts(msg_parts: list[Any]) -> list[Any]:
+    """
+    Groups and merges consecutive parts of the same streaming type ('text' or 'thought')
+    by accumulating text slices in a list and joining them in a single copy operation.
+    """
+    if not msg_parts:
+        return []
+
+    consolidated = []
+    active_type = None
+    active_accumulator = []
+    active_start_part = None
+
+    def flush_active():
+        if active_start_part is not None:
+            if active_type in ("text", "thought"):
+                consolidated.append(
+                    active_start_part.model_copy(
+                        update={"text": "".join(active_accumulator)}
+                    )
+                )
+            else:
+                consolidated.append(active_start_part)
+
+    for p in msg_parts:
+        if p.type in ("text", "thought"):
+            if active_type == p.type:
+                active_accumulator.append(p.text)
+            else:
+                flush_active()
+                active_type = p.type
+                active_accumulator = [p.text]
+                active_start_part = p
+        else:
+            flush_active()
+            consolidated.append(p)
+            active_type = None
+            active_accumulator = []
+            active_start_part = None
+
+    flush_active()
+    return consolidated
 
 
 class JsonRpcCodec:
@@ -547,7 +602,6 @@ class UdsServer:
             memory_manager=memory_manager,
             agent_registry=agent_registry,
         )
-        executor.registry.register_tool(CompleteTaskTool())
         executor.registry.register_tool(ReadFileTool())
         executor.registry.register_tool(WriteFileTool())
         executor.registry.register_tool(ListDirectoryTool())
@@ -624,13 +678,6 @@ class UdsServer:
         except ValueError as e:
             raise JsonRpcError(
                 -32602, f"Malformed UUID format for session_id: {session_id_str}"
-            ) from e
-
-        try:
-            call_id = uuid.UUID(call_id_str)
-        except ValueError as e:
-            raise JsonRpcError(
-                -32602, f"Malformed UUID format for call_id: {call_id_str}"
             ) from e
 
         state = self.active_sessions.get(session_id)
@@ -802,20 +849,10 @@ class UdsServer:
         bound_sessions: list[uuid.UUID],
     ) -> None:
         """Asynchronously loads an existing session and mounts it to active connections."""
-        workspace_path = params.get("workspace_path")
-        session_id_str = params.get("session_id")
-
-        if not workspace_path:
-            raise JsonRpcError(-32602, "Missing workspace_path parameter")
-        if not session_id_str:
-            raise JsonRpcError(-32602, "Missing session_id parameter")
-
         try:
-            session_id = uuid.UUID(session_id_str)
-        except ValueError as e:
-            raise JsonRpcError(
-                -32602, f"Malformed UUID format for session_id: {session_id_str}"
-            ) from e
+            p = SessionLoadParams.model_validate(params)
+        except Exception as e:
+            raise JsonRpcError(-32602, f"Invalid parameters: {e}")
 
         # Retrieve session storage directory from centralized settings
         settings = self.settings_manager.settings
@@ -823,7 +860,7 @@ class UdsServer:
 
         # Resolve relative configurations relative to active workspace_path
         if not configured_path.is_absolute():
-            storage_dir = Path(workspace_path) / configured_path
+            storage_dir = Path(p.workspace_path) / configured_path
         else:
             storage_dir = configured_path
 
@@ -838,32 +875,32 @@ class UdsServer:
         )
 
         try:
-            session = await session_manager.load_session(session_id)
+            session = await session_manager.load_session(p.session_id, parent_session_id=p.parent_session_id)
         except FileNotFoundError as e:
             raise JsonRpcError(
-                -32602, f"Session not found on disk: {session_id_str}"
+                -32602, f"Session not found on disk: {p.session_id}"
             ) from e
         except Exception as e:
             raise JsonRpcError(-32603, f"Internal error loading session: {e}") from e
 
         # Setup event bus and state
-        bus = MessageBus(session_id=session_id)
+        bus = MessageBus(session_id=p.session_id)
         bus.agent_name = session.metadata.agent_name
         telemetry_task = asyncio.create_task(
-            self.stream_session_telemetry(session_id, writer, bus)
+            self.stream_session_telemetry(p.session_id, writer, bus)
         )
 
-        self.active_sessions[session_id] = ActiveSessionState(
+        self.active_sessions[p.session_id] = ActiveSessionState(
             session=session,
             bus=bus,
             telemetry_task=telemetry_task,
-            workspace_path=Path(workspace_path),
+            workspace_path=Path(p.workspace_path),
             session_manager=session_manager,
         )
-        bound_sessions.append(session_id)
+        bound_sessions.append(p.session_id)
 
         result = {
-            "session_id": str(session_id),
+            "session_id": str(p.session_id),
             "status": "active",
             "metadata": session.metadata.model_dump(mode="json"),
             "chat_history": [
@@ -871,7 +908,7 @@ class UdsServer:
                     "role": msg.role,
                     "parts": [
                         coerce_block_to_ui(p.type, p.model_dump(), block_id=msg.id, role=msg.role)
-                        for p in msg.parts
+                        for p in consolidate_msg_parts(msg.parts)
                     ],
                 }
                 for msg in session.chat_history
@@ -953,7 +990,7 @@ class UdsServer:
 
                 elif event_type == EventType.TELEMETRY_CONTENT:
                     text = payload.text
-                    coerced = coerce_block_to_ui("model", {"text": text}, block_id=payload.block_id)
+                    coerced = coerce_block_to_ui("model", {"text": text}, block_id=payload.block_id, is_streaming=payload.is_streaming)
                     send_payload(coerced, envelope)
                     await writer.drain()
 

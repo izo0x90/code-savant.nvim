@@ -7,3 +7,5 @@ systemPrompt: |
 maxTurns: 5
 maxTimeSeconds: 30
 requires_approval: false
+tools:
+  - "*"

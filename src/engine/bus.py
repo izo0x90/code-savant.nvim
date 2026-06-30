@@ -15,10 +15,10 @@ class MessageBus:
     Strictly type-safe: operates exclusively on strongly-typed EventEnvelope instances.
     """
 
-    def __init__(self, name: str = "main", parent: Optional["MessageBus"] = None, session_id: Optional[uuid.UUID] = None):
+    def __init__(self, session_id: uuid.UUID, name: str = "main", parent: Optional["MessageBus"] = None):
         self.name: str = name
         self.parent: Optional[MessageBus] = parent
-        self.session_id: Optional[uuid.UUID] = session_id
+        self.session_id: uuid.UUID = session_id
         self.parent_session_id: Optional[uuid.UUID] = parent.session_id if parent else None
         self.agent_name: Optional[str] = None
         self.listeners: Dict[str, List[AsyncListener]] = {}
@@ -29,15 +29,16 @@ class MessageBus:
         if parent:
             parent._children.append(self)
 
-    def derive(self, subagent_name: str, child_session_id: Optional[uuid.UUID] = None) -> "MessageBus":
+    def derive(self, subagent_name: str, child_session_id: uuid.UUID) -> "MessageBus":
         """
         Derives a nested subagent message bus.
         """
         if not isinstance(subagent_name, str) or not subagent_name:
             raise ValueError("subagent_name must be a non-empty string")
+        if not isinstance(child_session_id, uuid.UUID):
+            raise TypeError("child_session_id must be a uuid.UUID instance")
 
-        resolved_id = child_session_id or uuid.uuid7()
-        child_bus = MessageBus(name=f"{self.name}/{subagent_name}", parent=self, session_id=resolved_id)
+        child_bus = MessageBus(session_id=child_session_id, name=f"{self.name}/{subagent_name}", parent=self)
         child_bus.agent_name = subagent_name
         child_bus.parent_session_id = self.session_id
         return child_bus

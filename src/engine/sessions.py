@@ -1,9 +1,11 @@
 import datetime
 import asyncio
 import uuid
+import json
+import shutil
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional, Union
+from pydantic import BaseModel, Field, ConfigDict, TypeAdapter
 
 from engine.constants import (
     DEFAULT_SESSION_NAME,
@@ -21,10 +23,28 @@ from engine.constants import (
 from engine.types import ChatMessage, AgentSessionProtocol, SessionMetadataPayload, SessionMetaSidecar
 
 
-class SessionPayload(BaseModel):
+
+
+
+class SetDelta(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    index: int
+    message: ChatMessage
+
+
+class RewindDelta(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
+    count: Optional[int] = None
+    truncate_to: Optional[int] = None
+
+
+class SessionIdRecord(BaseModel):
+    model_config = ConfigDict(frozen=True, slots=True)
     session_id: uuid.UUID
-    metadata: SessionMetadataPayload = Field(default_factory=SessionMetadataPayload)
-    chat_history: List[ChatMessage] = Field(default_factory=list)
+
+
+SessionRecord = Union[ChatMessage, SessionMetadataPayload, SetDelta, RewindDelta, SessionIdRecord]
+session_record_adapter = TypeAdapter(SessionRecord)
 
 
 class AgentSession(AgentSessionProtocol):
@@ -146,29 +166,28 @@ class SessionManager:
         self.tool_log_suffix = tool_log_suffix
 
     async def ensure_storage_dir(self) -> None:
-        def _mkdir():
-            self.storage_dir.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(_mkdir)
+        await asyncio.to_thread(self.storage_dir.mkdir, parents=True, exist_ok=True)
 
-    def _get_filepath(self, session_id: uuid.UUID, checkpoint_name: Optional[str] = None, storage_dir: Optional[Path] = None) -> Path:
-        target_dir = storage_dir or self.storage_dir
+    def _resolve_paths(self, session_id: uuid.UUID, parent_session_id: Optional[uuid.UUID] = None) -> Tuple[Path, Path]:
+        """
+        Pure deterministic path resolver.
+        - Metadata Sidecar: ALWAYS flat in the root storage directory (.code_savant/sessions/).
+        - Session History File: ALWAYS inside the master session folder (parent_session_id/ or session_id/).
+        """
         session_str = str(session_id)
-        if checkpoint_name:
-            filename = f"{session_str}{self.checkpoint_separator}{checkpoint_name}{self.session_suffix}"
-        else:
-            filename = f"{session_str}{self.session_suffix}"
-        return target_dir / filename
+        meta_filepath = self.storage_dir / f"{session_str}{self.meta_suffix}"
+
+        parent_dir = parent_session_id or session_id
+        filepath = self.storage_dir / str(parent_dir) / f"{session_str}{self.session_suffix}"
+
+        return filepath, meta_filepath
 
     async def save_session(self, session: AgentSession) -> None:
-        """
-        Asynchronously serializes and persists a session to disk.
-        Leverages Pydantic v2's native model_dump_json for zero dictionary copy costs.
-        """
-        # Resolve output files against repository base storage_dir
-        filepath = self._get_filepath(session.session_id)
-        meta_filepath = self.storage_dir / f"{str(session.session_id)}{self.meta_suffix}"
+        """Asynchronously serializes and persists a session to disk using batched IO."""
+        filepath, meta_filepath = self._resolve_paths(
+            session.session_id, session.metadata.parent_session_id
+        )
 
-        # Update metadata state cleanly using Pydantic's native model_copy (zero manual dict rebuilds)
         now_iso = datetime.datetime.now().isoformat()
         updated_metadata = session.metadata.model_copy(
             update={
@@ -179,34 +198,23 @@ class SessionManager:
         )
         session._metadata = updated_metadata
 
-        # Serialize ChatMessage objects line-by-line in JSONL format
-        lines = [msg.model_dump_json() for msg in session.chat_history]
-        payload_str = "\n".join(lines)
-
+        payload_str = "\n".join([msg.model_dump_json() for msg in session.chat_history])
         meta_payload = SessionMetaSidecar(
             session_id=session.session_id,
-            metadata=session.metadata,
+            metadata=updated_metadata,
             turn_count=len(session.chat_history)
         )
-        meta_str = meta_payload.model_dump_json(indent=2)
 
-        # Execute full directory creation and writes inside a single thread call
-        await asyncio.to_thread(
-            _sync_save_session_files,
-            filepath,
-            payload_str,
-            meta_filepath,
-            meta_str
-        )
+        def _batch_write():
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            filepath.write_text(payload_str, encoding="utf-8")
+            meta_filepath.write_text(meta_payload.model_dump_json(), encoding="utf-8")
+
+        await asyncio.to_thread(_batch_write)
 
     async def create_sub_session(self, parent_session_id: uuid.UUID, agent_name: str, query: str) -> AgentSession:
-        """
-        Creates a new isolated child session under the parent session's subdirectory.
-        Prevents parent listing pollution while keeping sessions structurally associated.
-        """
+        """Creates a new isolated child session stored flat inside the parent's directory."""
         child_session_id = uuid.uuid7()
-        
-        # Return a pure domain AgentSession
         sub_session = AgentSession(
             session_id=child_session_id,
             chat_history=[],
@@ -217,269 +225,140 @@ class SessionManager:
                 last_updated=datetime.datetime.now().isoformat(),
                 turn_count=0,
                 agent_name=agent_name,
-                parent_session_id=str(parent_session_id)
+                parent_session_id=parent_session_id
             )
         )
-        
-        # Resolve path under parent session id
-        child_storage_dir = self.storage_dir / str(parent_session_id)
-        
-        sub_manager = SessionManager(
-            storage_dir=child_storage_dir,
-            session_suffix=self.session_suffix,
-            meta_suffix=self.meta_suffix,
-            checkpoint_separator=self.checkpoint_separator,
-            scratch_dir_name=self.scratch_dir_name,
-            tool_log_prefix=self.tool_log_prefix,
-            tool_log_suffix=self.tool_log_suffix
-        )
-        await sub_manager.save_session(sub_session)
+        await self.save_session(sub_session)
         return sub_session
 
-    def _apply_playback_line(
-        self,
-        data: Dict[str, Any],
-        chat_history: List[ChatMessage],
-        line_num: int,
-        filepath: Path
-    ) -> Optional[SessionMetadataPayload]:
-        """
-        Surgically applies a single log modifier or appends a raw ChatMessage.
-        Returns updated session metadata if found, otherwise None.
-        """
-        modifier_type = data.get("type")
+    async def load_session(self, session_id: uuid.UUID, parent_session_id: Optional[uuid.UUID] = None, checkpoint_name: Optional[str] = None) -> AgentSession:
+        """Asynchronously reads and parses session files using a single batched IO block."""
+        filepath, meta_filepath = self._resolve_paths(session_id, parent_session_id)
 
-        if modifier_type == DELTA_TYPE_SET or KEY_SET_DELTA in data:
-            try:
-                if KEY_DELTA_INDEX in data and KEY_DELTA_MESSAGE in data:
-                    index_val = data[KEY_DELTA_INDEX]
-                    msg_data = data[KEY_DELTA_MESSAGE]
-                    msg = ChatMessage.model_validate(msg_data)
-                    if 0 <= index_val < len(chat_history):
-                        chat_history[index_val] = msg
-                    else:
-                        chat_history.append(msg)
-                elif KEY_DELTA_METADATA in data:
-                    meta_data = data[KEY_DELTA_METADATA]
-                    return SessionMetadataPayload.model_validate(meta_data)
-            except Exception as e:
-                raise ValueError(f"Line {line_num} in {filepath} has invalid SetDelta structure: {e}")
-        elif modifier_type == DELTA_TYPE_REWIND or KEY_REWIND_DELTA in data:
-            try:
-                if KEY_DELTA_COUNT in data:
-                    count_val = data[KEY_DELTA_COUNT]
-                    if isinstance(count_val, int) and count_val > 0:
-                        chat_history[:] = chat_history[:-count_val]
-                elif KEY_DELTA_TRUNCATE_TO in data:
-                    trunc_val = data[KEY_DELTA_TRUNCATE_TO]
-                    if isinstance(trunc_val, int) and 0 <= trunc_val <= len(chat_history):
-                        chat_history[:] = chat_history[:trunc_val]
-            except Exception as e:
-                raise ValueError(f"Line {line_num} in {filepath} has invalid RewindDelta structure: {e}")
-        else:
-            try:
-                # Clean up "type" key if it was injected or present
-                msg_data = dict(data)
-                msg_data.pop("type", None)
-                msg = ChatMessage.model_validate(msg_data)
-                chat_history.append(msg)
-            except Exception as e:
-                raise ValueError(f"Line {line_num} in {filepath} has invalid ChatMessage structure: {e}")
-        return None
-
-    async def load_session(self, session_id: uuid.UUID, checkpoint_name: Optional[str] = None) -> AgentSession:
-        """
-        Asynchronously loads and parses session files line-by-line using a sequential playback parser.
-        Supports both standard JSON (SessionPayload) and JSONL formats containing state modifiers.
-        Loads companion metadata sidecar to merge dates and reconstruct the fully validated session.
-        """
-        filepath = self._get_filepath(session_id, checkpoint_name)
-        session_str = str(session_id)
-        meta_filepath = self.storage_dir / f"{session_str}{self.meta_suffix}"
-
-        def _read_files():
+        def _batch_read():
             if not filepath.exists():
                 raise FileNotFoundError(f"Session file not found: {filepath}")
-            with open(filepath, "r", encoding="utf-8") as f:
-                content = f.read()
-            
-            meta_content = None
-            if meta_filepath.exists():
-                with open(meta_filepath, "r", encoding="utf-8") as f:
-                    meta_content = f.read()
+            content = filepath.read_text(encoding="utf-8")
+            meta_content = meta_filepath.read_text(encoding="utf-8") if meta_filepath.exists() else None
             return content, meta_content
 
-        content, meta_content = await asyncio.to_thread(_read_files)
+        content, meta_content = await asyncio.to_thread(_batch_read)
 
         chat_history: List[ChatMessage] = []
         metadata_from_payload: Optional[SessionMetadataPayload] = None
         session_id_from_payload: Optional[uuid.UUID] = None
 
-        # Clean the input content to check if it represents a single standard JSON object
-        stripped_content = content.strip()
-        is_standard_json = False
-
-        if stripped_content.startswith("{") and stripped_content.endswith("}"):
+        for idx, line in enumerate(content.splitlines()):
+            line_str = line.strip()
+            if not line_str:
+                continue
             try:
-                payload = SessionPayload.model_validate_json(stripped_content)
-                chat_history = list(payload.chat_history)
-                session_id_from_payload = payload.session_id
-                metadata_from_payload = payload.metadata
-                is_standard_json = True
-            except Exception:
-                # If it looks like standard JSON but fails to validate, we will fall back to JSONL
-                # parsing line-by-line to find the exact line causing the corrupt structure/validation error.
-                is_standard_json = False
+                record = session_record_adapter.validate_json(line_str)
+            except Exception as e:
+                raise ValueError(f"Line {idx + 1} in {filepath} is invalid: {e}")
 
-        if not is_standard_json:
-            import json
-            lines = content.splitlines()
-            for idx, line in enumerate(lines):
-                line_num = idx + 1
-                stripped_line = line.strip()
-                if not stripped_line:
-                    continue
-                
-                try:
-                    data = json.loads(stripped_line)
-                except Exception as e:
-                    raise ValueError(f"Line {line_num} in {filepath} is corrupt or invalid JSON: {e}")
-
-                if not isinstance(data, dict):
-                    raise ValueError(f"Line {line_num} in {filepath} is not a valid JSON object")
-
-                meta = self._apply_playback_line(data, chat_history, line_num, filepath)
-                if meta:
-                    metadata_from_payload = meta
-
-        # Reconstruct session metadata by merging dates and companion sidecar cleanly
-        name = None
-        query = None
-        created_at = None
-        last_updated = None
-        turn_count = len(chat_history)
-
-        if metadata_from_payload:
-            name = metadata_from_payload.name
-            query = metadata_from_payload.query
-            created_at = metadata_from_payload.created_at
-            last_updated = metadata_from_payload.last_updated
-            if metadata_from_payload.turn_count is not None:
-                turn_count = metadata_from_payload.turn_count
+            if isinstance(record, ChatMessage):
+                chat_history.append(record)
+            elif isinstance(record, SessionMetadataPayload):
+                metadata_from_payload = record
+            elif isinstance(record, SessionIdRecord):
+                session_id_from_payload = record.session_id
+            elif isinstance(record, SetDelta):
+                idx_val = record.index
+                msg_val = record.message
+                if 0 <= idx_val < len(chat_history):
+                    chat_history[idx_val] = msg_val
+                else:
+                    chat_history.append(msg_val)
+            elif isinstance(record, RewindDelta):
+                if record.count is not None:
+                    chat_history[:] = chat_history[:-record.count]
+                elif record.truncate_to is not None:
+                    chat_history[:] = chat_history[:record.truncate_to]
 
         if meta_content:
-            try:
-                sidecar = SessionMetaSidecar.model_validate_json(meta_content)
-                sidecar_meta = sidecar.metadata
-                if sidecar_meta:
-                    name = sidecar_meta.name or name
-                    query = sidecar_meta.query or query
-                    created_at = sidecar_meta.created_at or created_at
-                    last_updated = sidecar_meta.last_updated or last_updated
-                    if sidecar_meta.turn_count is not None:
-                        turn_count = sidecar_meta.turn_count
-            except Exception as e:
-                raise ValueError(f"Companion sidecar metadata file {meta_filepath} is corrupt: {e}")
+            metadata = SessionMetaSidecar.model_validate_json(meta_content).metadata
+        elif metadata_from_payload:
+            metadata = metadata_from_payload
+        else:
+            raise ValueError(f"No valid metadata sidecar or payload metadata found for session {session_id}")
 
-        # Enforce name fallback and maximum auto name length limit using centralized constants
-        if not name:
-            name = DEFAULT_SESSION_NAME
-        elif len(name) > MAX_AUTO_NAME_LENGTH:
-            name = name[:MAX_AUTO_NAME_LENGTH]
-
-        merged_metadata = SessionMetadataPayload(
-            name=name,
-            query=query,
-            created_at=created_at,
-            last_updated=last_updated,
-            turn_count=turn_count
-        )
+        if metadata.name and len(metadata.name) > MAX_AUTO_NAME_LENGTH:
+            metadata = metadata.model_copy(update={"name": metadata.name[:MAX_AUTO_NAME_LENGTH]})
 
         return AgentSession(
             session_id=session_id_from_payload or session_id,
             chat_history=chat_history,
-            metadata=merged_metadata
+            metadata=metadata
         )
 
-    async def list_sessions(self) -> List[SessionMetaSidecar]:
-        """
-        Asynchronously lists all active sessions in the storage directory.
-        Reads lightweight sidecars directly into strict SessionMetaSidecar Pydantic models.
-        """
+    async def delete_session(self, session_id: uuid.UUID, parent_session_id: Optional[uuid.UUID] = None) -> None:
+        """Asynchronously deletes a session sidecar and its isolated directory using a single batched IO block."""
+        filepath, meta_filepath = self._resolve_paths(session_id, parent_session_id)
+
+        def _batch_delete():
+            if meta_filepath.exists():
+                meta_filepath.unlink()
+            if not parent_session_id:
+                parent_dir = filepath.parent
+                if parent_dir.exists() and parent_dir.is_dir():
+                    shutil.rmtree(parent_dir)
+            else:
+                if filepath.exists():
+                    filepath.unlink()
+
+        await asyncio.to_thread(_batch_delete)
+
+    async def list_sessions(self, exclude_subagents: bool = True) -> List[SessionMetaSidecar]:
+        """Asynchronously lists and parses root parent sessions in a single, high-performance batched IO block."""
         if not self.storage_dir.exists():
             return []
 
-        def _list_dir():
-            try:
-                return list(self.storage_dir.iterdir())
-            except Exception as e:
-                raise RuntimeError(f"Failed to list session storage directory '{self.storage_dir}': {e}") from e
+        def _batch_list():
+            sessions: List[SessionMetaSidecar] = []
+            for p in self.storage_dir.iterdir():
+                if p.name.endswith(self.meta_suffix):
+                    try:
+                        content = p.read_text(encoding="utf-8")
+                        sidecar = SessionMetaSidecar.model_validate_json(content)
+                        if exclude_subagents and sidecar.metadata.parent_session_id is not None:
+                            continue
+                        sessions.append(sidecar)
+                    except Exception:
+                        continue
+            sessions.sort(key=lambda s: s.metadata.last_updated or "", reverse=True)
+            return sessions
 
-        paths = await asyncio.to_thread(_list_dir)
-        sessions: List[SessionMetaSidecar] = []
-
-        for p in paths:
-            if p.name.endswith(self.meta_suffix):
-                try:
-                    def _read_meta():
-                        with open(p, "r", encoding="utf-8") as f:
-                            return f.read()
-                    
-                    content = await asyncio.to_thread(_read_meta)
-                    sidecar = SessionMetaSidecar.model_validate_json(content)
-                    sessions.append(sidecar)
-                except Exception as e:
-                    import sys
-                    print(f"[SessionManager] Warning: Failed to parse corrupted session sidecar metadata file at '{p}': {e}", file=sys.stderr)
-                    continue
-
-        sessions.sort(key=lambda s: s.metadata.last_updated or "", reverse=True)
-        return sessions
-
-    async def delete_session(self, session_id: uuid.UUID) -> None:
-        """Asynchronously deletes a session JSON file and its companion sidecar, along with nested scratch logs."""
-        filepath = self._get_filepath(session_id)
-        session_str = str(session_id)
-        meta_filepath = self.storage_dir / f"{session_str}{self.meta_suffix}"
-
-        def _remove():
-            if filepath.exists():
-                filepath.unlink()
-            if meta_filepath.exists():
-                meta_filepath.unlink()
-            
-            # Recursively wipe the entire parent subdirectory (and nested sub-agents/scratch logs)
-            session_dir = self.storage_dir / session_str
-            if session_dir.exists() and session_dir.is_dir():
-                import shutil
-                try:
-                    shutil.rmtree(session_dir)
-                except Exception:
-                    pass
-
-        await asyncio.to_thread(_remove)
+        return await asyncio.to_thread(_batch_list)
 
     async def write_truncation_log(self, session: AgentSession, tool_name: str, content: str) -> Path:
-        """
-        Asynchronously writes truncated tool outputs to a structured, session-specific directory.
-        """
+        """Asynchronously writes truncated tool outputs to a structured, session-specific directory."""
         log_filepath = self.storage_dir / str(session.session_id) / self.scratch_dir_name / f"{self.tool_log_prefix}{tool_name}_{uuid.uuid7()}{self.tool_log_suffix}"
-        await asyncio.to_thread(_sync_write_truncation_log, log_filepath, content)
+        
+        def _write():
+            log_filepath.parent.mkdir(parents=True, exist_ok=True)
+            log_filepath.write_text(content, encoding="utf-8")
+            
+        await asyncio.to_thread(_write)
         return log_filepath
 
     async def save_checkpoint(self, session_id: uuid.UUID, checkpoint_name: str) -> None:
         """Asynchronously creates a named checkpoint snapshot of the current session in JSONL format."""
         session = await self.load_session(session_id)
-        filepath = self._get_filepath(session_id, checkpoint_name)
+        filepath = self.storage_dir / str(session_id) / f"{str(session_id)}{self.checkpoint_separator}{checkpoint_name}{self.session_suffix}"
 
-        # Write sequential JSONL lines for checkpoints
         lines = [msg.model_dump_json() for msg in session.chat_history]
         payload_str = "\n".join(lines)
-        await asyncio.to_thread(_sync_write_checkpoint, filepath, payload_str)
+        
+        def _write_chk():
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            filepath.write_text(payload_str, encoding="utf-8")
+            
+        await asyncio.to_thread(_write_chk)
 
     async def enforce_retention_policy(self, max_age_days: int, max_count: Optional[int] = None) -> None:
         """Asynchronously enforces age and count constraints across active sessions."""
-        sessions = await self.list_sessions()
+        sessions = await self.list_sessions(exclude_subagents=False)
         now = datetime.datetime.now()
 
         for session in list(sessions):
@@ -489,7 +368,7 @@ class SessionManager:
                     last_updated = datetime.datetime.fromisoformat(last_updated_str)
                     age_delta = now - last_updated
                     if age_delta.days > max_age_days:
-                        await self.delete_session(session.session_id)
+                        await self.delete_session(session.session_id, session.metadata.parent_session_id)
                         sessions.remove(session)
                 except ValueError:
                     continue
@@ -497,5 +376,5 @@ class SessionManager:
         if max_count is not None and len(sessions) > max_count:
             old_sessions = sessions[max_count:]
             for session in old_sessions:
-                await self.delete_session(session.session_id)
+                await self.delete_session(session.session_id, session.metadata.parent_session_id)
 

@@ -15,7 +15,7 @@ from engine.types import (
 
 @pytest.mark.asyncio
 async def test_message_bus_publish_subscribe() -> None:
-    bus = MessageBus()
+    bus = MessageBus(session_id=uuid.uuid7())
     received_events = []
 
     async def listener(envelope: EventEnvelope[Any]) -> None:
@@ -41,7 +41,7 @@ async def test_message_bus_publish_subscribe() -> None:
 
 @pytest.mark.asyncio
 async def test_message_bus_subscriber_error_handling() -> None:
-    bus = MessageBus()
+    bus = MessageBus(session_id=uuid.uuid7())
     received = []
 
     async def throwing_listener(envelope: EventEnvelope[Any]) -> None:
@@ -70,7 +70,7 @@ async def test_message_bus_subscriber_error_handling() -> None:
 
 @pytest.mark.asyncio
 async def test_message_bus_request_response() -> None:
-    bus = MessageBus()
+    bus = MessageBus(session_id=uuid.uuid7())
 
     async def replier(envelope: EventEnvelope[Any]) -> None:
         correlation_id = envelope.correlation_id
@@ -109,7 +109,7 @@ async def test_message_bus_request_response() -> None:
 
 @pytest.mark.asyncio
 async def test_message_bus_request_timeout() -> None:
-    bus = MessageBus()
+    bus = MessageBus(session_id=uuid.uuid7())
 
     # Request with no reply, should trigger TimeoutError
     request_env = Event(
@@ -132,8 +132,10 @@ async def test_message_bus_request_timeout() -> None:
 
 @pytest.mark.asyncio
 async def test_message_bus_derive_hierarchy() -> None:
-    parent_bus = MessageBus(name="parent")
-    child_bus = parent_bus.derive("child")
+    parent_id = uuid.uuid7()
+    parent_bus = MessageBus(session_id=parent_id, name="parent")
+    child_id = uuid.uuid7()
+    child_bus = parent_bus.derive("child", child_id)
 
     received_parent_events = []
 
@@ -160,7 +162,7 @@ async def test_message_bus_derive_hierarchy() -> None:
 
 @pytest.mark.asyncio
 async def test_message_bus_input_validation() -> None:
-    bus = MessageBus()
+    bus = MessageBus(session_id=uuid.uuid7())
 
     # Invalid event_type type
     with pytest.raises(TypeError):

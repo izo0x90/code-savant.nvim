@@ -4,3 +4,5 @@ systemPrompt: "You are a research subagent. Your specialty is scanning directori
 maxTurns: 4
 maxTimeSeconds: 20
 requires_approval: false
+tools:
+  - "*"

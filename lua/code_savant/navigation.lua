@@ -229,68 +229,173 @@ function Navigation.browse_approvals()
   }):find()
 end
 
-function Navigation.browse_active_agents()
+function Navigation.show_picker(opts)
+  local cs = require("code_savant")
+  if cs._has_telescope and cs._telescope_api then
+    local pickers = require("telescope.pickers")
+    local finders = require("telescope.finders")
+    local conf = require("telescope.config").values
+    local actions = require("telescope.actions")
+    local action_state = require("telescope.actions.state")
+
+    pickers.new({}, {
+      prompt_title = opts.title,
+      finder = finders.new_table({
+        results = opts.results,
+        entry_maker = opts.entry_maker,
+      }),
+      sorter = conf.generic_sorter({}),
+      attach_mappings = function(prompt_bufnr)
+        actions.select_default:replace(function()
+          actions.close(prompt_bufnr)
+          local selection = action_state.get_selected_entry()
+          if selection then
+            opts.on_select(selection.value)
+          end
+        end)
+        return true
+      end,
+    }):find()
+  else
+    local labels = {}
+    local lookup = {}
+    for _, item in ipairs(opts.results) do
+      local formatted = opts.entry_maker(item)
+      table.insert(labels, formatted.display)
+      lookup[formatted.display] = item
+    end
+    vim.ui.select(labels, { prompt = opts.title }, function(choice)
+      if choice and lookup[choice] then
+        opts.on_select(lookup[choice])
+      end
+    end)
+  end
+end
+
+function Navigation.browse_sessions(filter_mode)
+  filter_mode = filter_mode or "all"
   local cs = require("code_savant")
   local UI = require("code_savant.ui").get_instance()
+  local Network = require("code_savant.network")
+  local socket_path = cs.config.socket_path or "/tmp/code_savant.sock"
+  local workspace_path = vim.fn.getcwd()
 
-  if not cs._has_telescope or not cs._telescope_api then
-    vim.notify("[CodeSavant Error] Telescope is required to browse active agents. Please install telescope.nvim.", vim.log.levels.ERROR)
-    return
-  end
+  local function display_merged_sessions(saved_sessions)
+    saved_sessions = saved_sessions or {}
+    local merged = {}
+    local seen_session_ids = {}
 
-  local list = {}
-  for session_id, s in pairs(UI.sessions) do
-    if s.parent_id then
-      table.insert(list, {
-        session_id = session_id,
-        agent_name = s.agent_name,
-        status = s.status,
-        last_update = s.last_update,
+    local active_connections = {}
+    for bufnr, conn in pairs(Network._connections or {}) do
+      if conn.session_id and conn.session_id ~= "" then
+        active_connections[conn.session_id] = bufnr
+      end
+    end
+
+    for _, s in ipairs(saved_sessions) do
+      local s_id = s.session_id
+      local parent_id = s.metadata and s.metadata.parent_session_id
+      if type(parent_id) ~= "string" or parent_id == "" then
+        parent_id = nil
+      end
+      local is_sub = (parent_id ~= nil)
+      local active_buf = active_connections[s_id]
+
+      seen_session_ids[s_id] = true
+
+      table.insert(merged, {
+        session_id = s_id,
+        parent_id = parent_id,
+        agent_name = s.metadata and s.metadata.name or "Untitled Session",
+        status = active_buf and "active" or "saved",
+        is_active = (active_buf ~= nil),
+        is_subagent = is_sub,
+        turn_count = s.turn_count or 0,
+        last_updated = s.metadata and (s.metadata.last_updated or s.metadata.created_at) or "Unknown Date",
       })
     end
-  end
 
-  if #list == 0 then
-    vim.notify("[CodeSavant] No active swarm background subagents running.", vim.log.levels.INFO)
-    return
-  end
+    for s_id, s in pairs(UI.sessions) do
+      if not seen_session_ids[s_id] then
+        local active_buf = active_connections[s_id]
+        local parent_id = s.parent_id
+        if type(parent_id) ~= "string" or parent_id == "" then
+          parent_id = nil
+        end
+        local is_sub = (parent_id ~= nil)
 
-  local pickers = require("telescope.pickers")
-  local finders = require("telescope.finders")
-  local conf = require("telescope.config").values
-  local actions = require("telescope.actions")
-  local action_state = require("telescope.actions.state")
+        table.insert(merged, {
+          session_id = s_id,
+          parent_id = parent_id,
+          agent_name = s.agent_name or "Untitled Session",
+          status = s.status or (active_buf and "active" or "idle"),
+          is_active = (active_buf ~= nil or s.status == "thinking"),
+          is_subagent = is_sub,
+          turn_count = s.turn_count or (s.history and #s.history) or 0,
+          last_updated = "Live Session",
+        })
+      end
+    end
 
-  pickers.new({}, {
-    prompt_title = "Active Swarm Subagents Browser",
-     finder = finders.new_table({
-      results = list,
-      entry_maker = function(entry)
-        local status_sym = (entry.status == "thinking") and "󰒋 [RUNNING]" or "󰄬 [IDLE]"
-        local label = string.format("%s - %s (Session: %s)", status_sym, entry.agent_name, entry.session_id:sub(1, 8))
+    local filtered = {}
+    for _, item in ipairs(merged) do
+      local keep = false
+      if filter_mode == "all" then
+        keep = not item.is_subagent
+      elseif filter_mode == "active" then
+        keep = item.is_active
+      elseif filter_mode == "subagents" then
+        keep = item.is_subagent
+      end
+
+      if keep then
+        table.insert(filtered, item)
+      end
+    end
+
+    if #filtered == 0 then
+      vim.notify("[CodeSavant] No sessions found matching filter '" .. filter_mode .. "'.", vim.log.levels.INFO)
+      return
+    end
+
+    local picker_title = "CodeSavant Sessions (" .. filter_mode .. ")"
+    Navigation.show_picker({
+      title = picker_title,
+      results = filtered,
+      entry_maker = function(item)
+        local status_sym = "󰄬 [SAVED]"
+        if item.is_active then
+          status_sym = (item.status == "thinking") and "󰒋 [RUNNING]" or "● [ACTIVE]"
+        end
+
+        local clean_date = item.last_updated:gsub("T", " "):gsub("%.%d+", "")
+        local label = string.format("%s - %s (%s) - %d turns", status_sym, item.agent_name, clean_date, item.turn_count)
         return {
-          value = entry,
+          value = item,
           display = label,
-          ordinal = entry.agent_name .. " " .. entry.status,
+          ordinal = item.agent_name .. " " .. item.status .. " " .. clean_date,
         }
       end,
-    }),
-    sorter = conf.generic_sorter({}),
-    attach_mappings = function(prompt_bufnr, map)
-      actions.select_default:replace(function()
-        actions.close(prompt_bufnr)
-        local entry = action_state.get_selected_entry()
-        if not entry then return end
-        local val = entry.value
+      on_select = function(selected)
+        cs.open_session(selected.session_id, selected.parent_id)
+      end,
+    })
+  end
 
-        -- Mount the subagent's session in a new buffer and switch to it!
-        vim.schedule(function()
-          cs.open_session(val.session_id)
-        end)
-      end)
-      return true
-    end,
-  }):find()
+  cs.ensure_daemon_running(function(success, _)
+    if not success then
+      display_merged_sessions({})
+      return
+    end
+
+    Network.list_sessions(socket_path, workspace_path, function(sessions, list_err)
+      if list_err then
+        display_merged_sessions({})
+        return
+      end
+      display_merged_sessions(sessions)
+    end)
+  end)
 end
 
 return Navigation

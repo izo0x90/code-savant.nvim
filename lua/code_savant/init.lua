@@ -370,7 +370,7 @@ end
 --- and registers network handlers.
 --- @param bufnr integer
 --- @param mock_mode? boolean Optional mock mode flag
-function M.start_chat_session(bufnr, mock_mode, session_id)
+function M.start_chat_session(bufnr, mock_mode, session_id, parent_id)
   -- Programmatically register our custom filetype with render-markdown active state if present
   if get_render_markdown() then
     local state_ok, state = pcall(require, "render-markdown.state")
@@ -393,7 +393,7 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
 
     -- Connect over socket pipe and initiate session
     local socket_path = M.config.socket_path or CONSTANTS.DEFAULT_SOCKET_PATH
-    Network.connect(socket_path, bufnr, vim.fn.getcwd(), mock_mode, session_id)
+    Network.connect(socket_path, bufnr, vim.fn.getcwd(), mock_mode, session_id, parent_id)
     
     -- Register incoming message stream handler (JSON-RPC listener)
     Network.add_listener(bufnr, function(parsed)
@@ -534,6 +534,7 @@ function M.start_chat_session(bufnr, mock_mode, session_id)
               id = parsed.id,
               title = parsed.title,
               content = parsed.full_content,
+              is_streaming = parsed.is_streaming,
             })
           end
 
@@ -552,16 +553,35 @@ end
 
 --- Opens and mounts any session (main or subagent) purely driven by server telemetry
 --- @param session_id? string Optional session ID to load instead of starting a new one
+--- @param parent_id? string Optional parent session ID to load
 --- @param mock_mode? boolean Optional mock mode flag
-function M.open_session(session_id, mock_mode)
+function M.open_session(session_id, parent_id, mock_mode)
+  -- 🛡️ Centralized Defense-in-depth: Prevent duplicate buffers for the same session ID
+  if session_id then
+    local existing_bufnr = nil
+    for other_buf, conn in pairs(Network._connections or {}) do
+      if conn.session_id == session_id then
+        existing_bufnr = other_buf
+        break
+      end
+    end
+    if existing_bufnr then
+      M.mount_session(existing_bufnr)
+      return
+    end
+  end
+
   local result = M.create_chat_buffer()
   local bufnr = result.bufnr
 
   if session_id then
     vim.b[bufnr].session_id = session_id
   end
+  if parent_id then
+    vim.b[bufnr].parent_id = parent_id
+  end
 
-  M.start_chat_session(bufnr, mock_mode or false, session_id)
+  M.start_chat_session(bufnr, mock_mode or false, session_id, parent_id)
 end
 
 --- Sets buffer on a window while temporarily disabling winfixbuf.
@@ -771,8 +791,8 @@ local function apply_buffer_config(history_bufnr, input_bufnr)
 
   -- Bind manual Swarm Agents browser if configured
   if keymaps.agents then
-    vim.keymap.set("n", keymaps.agents.key, function() vim.cmd("CodeSavantAgents") end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.agents.desc })
-    vim.keymap.set("n", keymaps.agents.key, function() vim.cmd("CodeSavantAgents") end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.agents.desc })
+    vim.keymap.set("n", keymaps.agents.key, function() vim.cmd("CodeSavantSessions subagents") end, { buffer = history_bufnr, silent = true, desc = "CodeSavant " .. keymaps.agents.desc })
+    vim.keymap.set("n", keymaps.agents.key, function() vim.cmd("CodeSavantSessions subagents") end, { buffer = input_bufnr, silent = true, desc = "CodeSavant " .. keymaps.agents.desc })
   end
 
   -- Bind FIFO approvals inside both Input and History buffers
@@ -1062,183 +1082,6 @@ function M.restore_layout_balance()
   Layout.restore_layout_balance()
 end
 
---- Renders a fuzzy session switching picker (using Telescope if available, or vim.ui.select).
-function M.select_session()
-  local sessions = get_active_sessions()
-  if #sessions == 0 then
-    vim.notify("[CodeSavant] No active chat sessions.", vim.log.levels.INFO)
-    return
-  end
-
-  local items = {}
-  local lookup = {}
-
-  for _, bufnr in ipairs(sessions) do
-    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, 10, false)
-    local first_prompt = "Empty Session"
-    for _, line in ipairs(lines) do
-      if line ~= "" and not line:match("^%s*$") and not line:match("User:") and not line:match("CodeSavant") then
-        local cleaned = line:gsub("^%s+", ""):gsub("%s+$", "")
-        if cleaned ~= "" then
-          first_prompt = cleaned
-          if #first_prompt > 50 then
-            first_prompt = first_prompt:sub(1, 47) .. "..."
-          end
-          break
-        end
-      end
-    end
-
-    local label = string.format("Session %d: %s", bufnr, first_prompt)
-    table.insert(items, label)
-    lookup[label] = bufnr
-  end
-
-  local has_telescope, telescope = pcall(require, "telescope")
-  if has_telescope then
-    local pickers = require("telescope.pickers")
-    local finders = require("telescope.finders")
-    local conf = require("telescope.config").values
-    local actions = require("telescope.actions")
-    local action_state = require("telescope.actions.state")
-
-    pickers.new({}, {
-      prompt_title = "CodeSavant Chat Sessions",
-      finder = finders.new_table({
-        results = items,
-      }),
-      sorter = conf.generic_sorter({}),
-      attach_mappings = function(prompt_bufnr)
-        actions.select_default:replace(function()
-          actions.close(prompt_bufnr)
-          local selection = action_state.get_selected_entry()
-          if selection then
-            local bufnr = lookup[selection[1]]
-            if bufnr then
-              M.mount_session(bufnr)
-            end
-          end
-        end)
-        return true
-      end,
-    }):find()
-  else
-    vim.ui.select(items, {
-      prompt = "Select CodeSavant Chat Session:",
-    }, function(choice)
-      if choice then
-        local bufnr = lookup[choice]
-        if bufnr then
-          M.mount_session(bufnr)
-        end
-      end
-    end)
-  end
-end
-
---- Asynchronously queries the daemon for workspace sessions and presents an interactive selector.
-function M.load_session_picker()
-  -- Self-Bootstrapping check on demand
-  M.bootstrap_if_needed()
-
-  local socket_path = M.config.socket_path or CONSTANTS.DEFAULT_SOCKET_PATH
-  local workspace_path = vim.fn.getcwd()
-
-  M.ensure_daemon_running(function(success, err_msg)
-    if not success then
-      vim.schedule(function()
-        notify_err(err_msg or "Background daemon is not running.")
-      end)
-      return
-    end
-
-    local Network = require("code_savant.network")
-    Network.list_sessions(socket_path, workspace_path, function(sessions, list_err)
-      if list_err then
-        notify_err("Failed to list sessions: " .. tostring(list_err))
-        return
-      end
-
-      if not sessions or #sessions == 0 then
-        vim.notify("[CodeSavant] No saved chat sessions found in this workspace.", vim.log.levels.INFO)
-        return
-      end
-
-      local items = {}
-      local session_map = {}
-
-      for _, s in ipairs(sessions) do
-        local meta = s.metadata or {}
-        local name = meta.name or "Untitled Session"
-        local date = meta.last_updated or meta.created_at or "Unknown Date"
-        -- Format date nicely (usually in ISO 8601 e.g. "2026-06-19T10:20:30")
-        local clean_date = date:gsub("T", " "):gsub("%.%d+", "")
-        local label = string.format("%s (%s) - %d turns", name, clean_date, s.turn_count or 0)
-        table.insert(items, label)
-        session_map[label] = s
-      end
-
-      local function on_choice(choice)
-        if not choice then return end
-        local selected = session_map[choice]
-        if not selected then return end
-
-        -- 🛡️ Idempotent check: Prevent duplicate buffers for the same session!
-        local existing_bufnr = nil
-        local Network = require("code_savant.network")
-        for bufnr, conn in pairs(Network._connections) do
-          if conn.session_id == selected.session_id then
-            existing_bufnr = bufnr
-            break
-          end
-        end
-
-        if existing_bufnr then
-          M.mount_session(existing_bufnr)
-          return
-        end
-
-        M.open_session(selected.session_id, selected.metadata.mock_mode or false)
-      end
-
-      local has_telescope, telescope = pcall(require, "telescope")
-      if has_telescope then
-        local pickers = require("telescope.pickers")
-        local finders = require("telescope.finders")
-        local conf = require("telescope.config").values
-        local actions = require("telescope.actions")
-        local action_state = require("telescope.actions.state")
-
-        pickers.new({}, {
-          prompt_title = "Load CodeSavant Session",
-          finder = finders.new_table({
-            results = items,
-          }),
-          sorter = conf.generic_sorter({}),
-          attach_mappings = function(prompt_bufnr)
-            actions.select_default:replace(function()
-              actions.close(prompt_bufnr)
-              local selection = action_state.get_selected_entry()
-              if selection then
-                on_choice(selection[1])
-              end
-            end)
-            return true
-          end,
-        }):find()
-      else
-        vim.ui.select(items, {
-          prompt = "Select CodeSavant Session to Load:",
-        }, function(choice)
-          if choice then
-            on_choice(choice)
-          end
-        end)
-      end
-    end)
-  end)
-end
-
 --- Manually toggles the visual rendering of markdown overlays on a per-buffer basis
 --- @param bufnr integer
 function M.toggle_render_markdown(bufnr)
@@ -1307,7 +1150,7 @@ function M.setup(opts)
       end
     end
 
-    M.open_session(nil, mock_mode)
+    M.open_session(nil, nil, mock_mode)
   end, {
     nargs = "?",
     complete = function()
@@ -1316,13 +1159,25 @@ function M.setup(opts)
     force = true,
   })
 
-  vim.api.nvim_create_user_command("CodeSavantSessions", function()
-    M.select_session()
-  end, { force = true })
-
-  vim.api.nvim_create_user_command("CodeSavantHistory", function()
-    M.load_session_picker()
-  end, { force = true })
+  vim.api.nvim_create_user_command("CodeSavantSessions", function(cmd_opts)
+    local filter = "all"
+    if cmd_opts.args and cmd_opts.args ~= "" then
+      local arg = cmd_opts.args:lower()
+      if arg == "all" or arg == "active" or arg == "subagents" then
+        filter = arg
+      else
+        vim.notify("[CodeSavant Error] Invalid sessions filter: " .. cmd_opts.args .. ". Use 'all', 'active', or 'subagents'.", vim.log.levels.ERROR)
+        return
+      end
+    end
+    require("code_savant.navigation").browse_sessions(filter)
+  end, {
+    nargs = "?",
+    complete = function()
+      return { "all", "active", "subagents" }
+    end,
+    force = true,
+  })
 
   vim.api.nvim_create_user_command("CodeSavantNextSession", function()
     M.cycle_session("next")
@@ -1338,10 +1193,6 @@ function M.setup(opts)
 
   vim.api.nvim_create_user_command("CodeSavantApprovals", function()
     require("code_savant.navigation").browse_approvals()
-  end, { force = true })
-
-  vim.api.nvim_create_user_command("CodeSavantAgents", function()
-    require("code_savant.navigation").browse_active_agents()
   end, { force = true })
 
   vim.api.nvim_create_user_command("CodeSavantToggleHUD", function()

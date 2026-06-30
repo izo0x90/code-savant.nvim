@@ -291,6 +291,7 @@ class LocalAgentExecutor:
                             text=chunk.text,
                             block_id=model_message_id,
                             prompt_id=prompt_id,
+                            is_streaming=True,
                         ),
                     )
                 )
@@ -403,6 +404,7 @@ class LocalAgentExecutor:
                         text=outcome.submitted_output,
                         block_id=final_msg_id,
                         prompt_id=prompt_id,
+                        is_streaming=False,
                     )
                 )
             )

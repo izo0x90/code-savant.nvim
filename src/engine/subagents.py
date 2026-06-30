@@ -1,8 +1,9 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from pydantic import BaseModel, Field
 
 from engine.tools import (
-    BaseTool
+    BaseTool,
+    CompleteTaskTool
 )
 from engine.types import ExecutionContext, ExecutorAgentConfig
 from engine.agents import AgentRegistry
@@ -74,13 +75,22 @@ class AgentTool(BaseTool):
             query=args.prompt
         )
         
-        # Initialize child executor as completely stateless, reusing parent's tool registry
+        # Build independent registry and populate strictly from profile tools
+        profile_tools = profile.get("tools")
+        if profile_tools is None:
+            profile_tools = []
+
+        child_registry = ToolRegistry()
+        child_registry.map_from_parent(self.tool_registry, profile_tools)
+        child_registry.register_tool(CompleteTaskTool())
+
+        # Initialize child executor as completely stateless, using child tool registry
         child_executor = LocalAgentExecutor(
             definition=config,
             context_strategy=self.context_strategy,
             agent_registry=self.agent_registry,
             memory_manager=self.memory_manager,
-            tool_registry=self.tool_registry
+            tool_registry=child_registry
         )
         
         # Formulate dynamic child ExecutionContext
